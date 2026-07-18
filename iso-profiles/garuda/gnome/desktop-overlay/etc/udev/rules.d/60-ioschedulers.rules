@@ -1,7 +1,0 @@
-# I/O schedulers tuned for latency (Bazzite-style: avoid I/O starvation during game installs).
-# NVMe: none (lowest latency, the device does its own scheduling).
-ACTION=="add|change", KERNEL=="nvme[0-9]n[0-9]*", ATTR{queue/scheduler}="none"
-# SATA/USB SSD: bfq (fair, good interactivity).
-ACTION=="add|change", KERNEL=="sd[a-z]*", ATTR{queue/rotational}=="0", ATTR{queue/scheduler}="bfq"
-# Rotational HDD: bfq.
-ACTION=="add|change", KERNEL=="sd[a-z]*", ATTR{queue/rotational}=="1", ATTR{queue/scheduler}="bfq"

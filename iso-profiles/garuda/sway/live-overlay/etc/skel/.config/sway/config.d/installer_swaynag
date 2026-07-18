@@ -1,3 +1,0 @@
-# Run the installer_swaynag script
-
-exec ~/.config/sway/scripts/installer_swaynag.sh

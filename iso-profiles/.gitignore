@@ -1,8 +1,0 @@
-*.sig
-*.tar.gz
-*.tar.xz
-*~
-.direnv
-.idea
-.pre-commit-config.yaml
-/buildiso

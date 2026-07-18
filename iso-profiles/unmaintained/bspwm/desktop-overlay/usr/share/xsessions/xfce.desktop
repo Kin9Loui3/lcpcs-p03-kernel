@@ -1,6 +1,0 @@
-[Desktop Entry]
-Name=Garuda BSPWM
-Comment=BSPWM with xfce Session
-Exec=bspwm
-Type=Application
-Keywords=wm;tiling

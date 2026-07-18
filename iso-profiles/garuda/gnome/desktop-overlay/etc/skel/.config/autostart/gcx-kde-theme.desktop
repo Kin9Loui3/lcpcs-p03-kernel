@@ -1,9 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=Garuda CachyOS KDE Icons/Cursor
-Comment=Apply Slot-Dark-Icons + Bibata cursor to the Plasma session
-Exec=bash -lc "$HOME/.local/bin/gcx-kde-theme.sh"
-OnlyShowIn=KDE;
-X-KDE-autostart-phase=1
-NoDisplay=true
-Terminal=false

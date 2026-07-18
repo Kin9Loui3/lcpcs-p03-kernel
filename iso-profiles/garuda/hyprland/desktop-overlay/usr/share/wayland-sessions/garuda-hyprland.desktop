@@ -1,5 +1,0 @@
-[Desktop Entry]
-Name=Garuda Hyprland
-Comment=An intelligent dynamic tiling Wayland compositor
-Exec=hyprstart
-Type=Application

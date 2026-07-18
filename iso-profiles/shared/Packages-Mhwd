@@ -1,9 +1,0 @@
-## Network
->extra broadcom-wl-dkms
-
-## Nonfree Nvidia
->extra >nonfree_x86_64 garuda-hardware-profile-nvidia
-
-## Virtualization
-garuda-hardware-profile-vm
->extra >nonfree_x86_64 KERNEL-nvidia-open
