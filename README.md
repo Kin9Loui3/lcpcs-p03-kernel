@@ -1,4 +1,4 @@
-# Copland OS
+# LCPCs P03 Kernel - Arch
 
 A custom **P03 Kernel × Arch** Linux Kernel, tuned for a **(x86-64-v3)** +
 **RTX 5090 (Blackwell)**. Using using CachyOS but should be able to run on most Arch systems.
