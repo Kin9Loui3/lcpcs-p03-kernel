@@ -1,3 +1,5 @@
+name: Linux TKG P03 Build All CPUs
+      
       - name: Build TKG P03 for ${{ matrix.cpu }}
         run: |
           cd build-tools/linux-tkg
