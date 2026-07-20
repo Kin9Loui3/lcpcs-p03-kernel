@@ -46,7 +46,7 @@ _kernel_base="${_kernel_base:-stable}"
 SCHEDULERS=("eevdf" "bore" "bmq")
 
 echo "========================================"
-echo "Linux TKG P03 Build Configuration"
+echo "Linux TKG Build Configuration"
 echo "========================================"
 echo "CPU_TYPE: ${CPU_TYPE}"
 echo "_processor_opt: ${_processor_opt}"
@@ -59,14 +59,6 @@ echo "========================================"
 # Create output directory for built packages
 mkdir -p /output
 
-# Update customization.cfg with correct processor opt
-if [ -f "$TKG/customization.cfg" ]; then
-    echo "Updating customization.cfg with _processor_opt=${_processor_opt}"
-    sed -i "s/_processor_opt=.*/_processor_opt=\"${_processor_opt}\"/" "$TKG/customization.cfg"
-    echo "Updated _processor_opt:"
-    grep "_processor_opt=" "$TKG/customization.cfg"
-fi
-
 for _cpusched in "${SCHEDULERS[@]}"; do
     echo ""
     echo "========================================="
@@ -75,7 +67,7 @@ for _cpusched in "${SCHEDULERS[@]}"; do
     cd "$TKG"
     
     # Clean previous builds
-    rm -rf src/ pkg/ *.pkg.tar.* .makepkg.conf 2>/dev/null || true
+    rm -rf src/ pkg/ *.pkg.tar.* 2>/dev/null || true
     
     # Export build variables
     export _NUKR=true
