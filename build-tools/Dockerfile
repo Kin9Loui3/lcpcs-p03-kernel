@@ -9,7 +9,8 @@ RUN pacman -Syu --noconfirm && \
     llvm \
     lld \
     git \
-    ccache
+    ccache \
+    sudo
 
 # Create a non-root user for building
 RUN useradd -m -s /bin/bash builder && \
@@ -30,6 +31,9 @@ RUN chmod +x /build-tools/build.sh
 
 # Change ownership to builder user
 RUN chown -R builder:builder /linux-tkg /build-tools
+
+# Create output directory
+RUN mkdir -p /output && chown builder:builder /output
 
 # Switch to builder user
 USER builder
