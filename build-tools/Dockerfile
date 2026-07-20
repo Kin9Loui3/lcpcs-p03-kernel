@@ -1,34 +1,27 @@
-FROM ubuntu:24.04
+FROM archlinux:latest
 
 ARG CPU_TYPE=generic
 
-# Install build dependencies
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    linux-headers-generic \
+RUN pacman -Syu --noconfirm && \
+    pacman -S --noconfirm \
+    base-devel \
+    clang \
+    llvm \
+    lld \
     git \
-    bc \
-    bison \
-    flex \
-    libelf-dev \
-    libssl-dev \
-    pahole \
-    wget \
-    curl \
-    cpio \
-    kmod \
-    && rm -rf /var/lib/apt/lists/*
+    ccache
 
 WORKDIR /build
 
-# Copy only the build-tools directory
-COPY build-tools/ /build/
+# Clone linux-tkg
+RUN git clone https://github.com/Frogging-Family/linux-tkg.git /linux-tkg
 
-# Make build script executable
+# Copy your customization and patches
+COPY build-tools/customization.cfg /build/customization.cfg
+COPY build-tools/patches/ /build/patches/
+COPY build-tools/build.sh /build/build.sh
+
 RUN chmod +x /build/build.sh
 
-# Run the build with the specified CPU type
-RUN /build/build.sh --cpu-type=${CPU_TYPE}
-
-# Output the kernel
-CMD ["bash"]
+# Run the build
+RUN /build/build.sh
