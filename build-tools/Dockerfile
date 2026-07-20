@@ -17,9 +17,10 @@ WORKDIR /linux-tkg
 RUN git clone https://github.com/Frogging-Family/linux-tkg.git .
 
 # Copy your customization and patches
-COPY build-tools/customization.cfg ./customization.cfg
-COPY build-tools/patches/ ./patches/
-COPY build-tools/build.sh /build-tools/build.sh
+COPY build-tools/linux-tkg-p03/customization.cfg ./customization.cfg
+COPY build-tools/linux-tkg-p03/patches/ ./patches/
+COPY build-tools/linux-tkg-p03/p03.config ./p03.config
+COPY build-tools/linux-tkg-p03/build.sh /build-tools/build.sh
 
 RUN chmod +x /build-tools/build.sh
 
