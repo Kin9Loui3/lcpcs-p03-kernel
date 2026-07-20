@@ -62,7 +62,6 @@ jobs:
           file: ./build-tools/Dockerfile
           build-args: |
             CPU_TYPE=${{ matrix.cpu-type }}
-            _processor_opt=${{ matrix.cpu-type }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -74,8 +73,7 @@ jobs:
           mkdir -p output-${{ matrix.cpu-type }}
           docker run --rm \
             -v $(pwd)/output-${{ matrix.cpu-type }}:/output \
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ matrix.cpu-type }}-latest \
-            sh -c 'cp -v /output/*.pkg.tar.* /output/ 2>/dev/null || echo "No packages found"'
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ matrix.cpu-type }}-latest
 
       - name: Generate build info
         run: |
