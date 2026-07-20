@@ -34,5 +34,12 @@ RUN chown -R builder:builder /linux-tkg /build-tools
 # Switch to builder user
 USER builder
 
+# Set environment variables
+ENV CPU_LEVEL=x86-64 \
+    _processor_opt=x86-64 \
+    _compiler=llvm \
+    _lto_mode=thin \
+    _kernel_base=stable
+
 # Run the build
-RUN /build-tools/build.sh
+CMD ["/build-tools/build.sh"]
