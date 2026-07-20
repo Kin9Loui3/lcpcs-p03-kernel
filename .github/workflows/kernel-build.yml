@@ -1,5 +1,9 @@
 name: Kernel Build
 
+permissions:
+  contents: write
+  actions: read
+
 on:
   schedule:
     - cron: '0 2 * * *'  # 2 AM UTC daily
