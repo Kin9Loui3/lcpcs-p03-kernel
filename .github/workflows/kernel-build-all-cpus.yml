@@ -71,9 +71,10 @@ jobs:
       - name: Extract kernel packages from container
         run: |
           mkdir -p output-${{ matrix.cpu-type }}
+          IMAGE_NAME_LOWER=$(echo "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}" | tr '[:upper:]' '[:lower:]')
           docker run --rm \
             -v $(pwd)/output-${{ matrix.cpu-type }}:/output \
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ matrix.cpu-type }}-latest
+            ${IMAGE_NAME_LOWER}:${{ matrix.cpu-type }}-latest
 
       - name: Generate build info
         run: |
