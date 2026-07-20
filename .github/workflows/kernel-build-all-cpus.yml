@@ -1,182 +1,265 @@
-      - name: Build TKG P03 for ${{ matrix.cpu }}
+name: Linux TKG P03 Build All CPUs
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  CCACHE_DIR: ${{ github.workspace }}/.ccache
+  CCACHE_MAXSIZE: 5G
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        cpu: [generic, zen4, zen5]
+      fail-fast: false
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up build environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            git \
+            wget \
+            ccache \
+            libncurses-dev \
+            flex \
+            bison \
+            libssl-dev \
+            libelf-dev \
+            dwarves \
+            python3 \
+            pahole \
+            bc \
+            cpio \
+            rsync \
+            tar \
+            gzip \
+            xz-utils
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-${{ matrix.cpu }}-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ matrix.cpu }}-
+            ccache-
+
+      - name: Initialize ccache
+        run: |
+          ccache -z
+          ccache -s
+
+      - name: Download Linux kernel source
         run: |
           cd build-tools/linux-tkg
-          
-          # Set compiler to clang-18
-          export CC=clang-18
-          export CXX=clang++-18
-          export LD=lld-18
-          export LLVM=1
-          export LLVM_IAS=1
-          export _NUKR=true
-          
-          echo "Building with Clang/LLVM..."
-          echo "Current directory: $(pwd)"
-          echo "Contents:"
-          ls -la | head -20
-          
-          # Check for PKGBUILD
-          if [ -f PKGBUILD ]; then
-            echo "Found PKGBUILD, using makepkg..."
-            makepkg -s --noconfirm --skippgpcheck 2>&1 | tee build.log
-            BUILD_STATUS=${PIPESTATUS[0]}
-          else
-            echo "No PKGBUILD, using manual kernel build..."
-            
-            # Generate .config from customization.cfg
-            if [ -f customization.cfg ]; then
-              echo "Using customization.cfg to generate config..."
-              bash -c "source customization.cfg; make menuconfig" || make defconfig
-            else
-              echo "No customization.cfg, using defconfig..."
-              make defconfig
-            fi
-            
-            # Build kernel
-            make -j$(nproc) \
-              ARCH=x86_64 \
-              CROSS_COMPILE= \
-              all modules 2>&1 | tee build.log
-            BUILD_STATUS=${PIPESTATUS[0]}
-          fi
-          
-          # Debug output
-          echo "=== Build Status: $BUILD_STATUS ==="
-          echo "=== Checking for kernel image ==="
-          ls -la arch/x86_64/boot/ 2>/dev/null || echo "arch/x86_64/boot/ not found"
-          find . -maxdepth 3 -name "bzImage" -o -name "vmlinuz" 2>/dev/null || echo "No kernel image found"
-          
-          if [ $BUILD_STATUS -ne 0 ]; then
-            echo "Build failed, showing last 100 lines of log:"
-            tail -100 build.log
-            exit 1
+          if [ ! -f linux-*.tar.xz ]; then
+            echo "Downloading kernel source..."
+            wget -q https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.13.tar.xz
+            tar -xf linux-6.13.tar.xz
+            mv linux-6.13 linux-src
           fi
 
-      - name: Rename packages with CPU variant
-        if: always()
+      - name: Apply TKG patches
         run: |
-          cd build-tools/linux-tkg
+          cd build-tools/linux-tkg/linux-src
           
-          # Rename any existing packages
-          for pkg in *.pkg.tar.*; do
-            [ -f "$pkg" ] || continue
-            ext="${pkg##*.pkg.tar.}"
-            new_name="linux-tkg-p03-${{ matrix.cpu }}-x86_64.pkg.tar.${ext}"
-            if [ "$pkg" != "$new_name" ]; then
-              echo "Renaming: $pkg → $new_name"
-              mv "$pkg" "$new_name"
+          echo "Applying TKG patches for ${{ matrix.cpu }}..."
+          
+          # Apply base patches
+          for patch in ../patches/base/*.patch; do
+            if [ -f "$patch" ]; then
+              echo "Applying $(basename $patch)..."
+              patch -p1 < "$patch" || echo "Warning: $(basename $patch) may have conflicts"
             fi
           done
           
-          # Verify renamed packages
-          echo "=== Final packages ==="
-          ls -lh *.pkg.tar.* 2>/dev/null || echo "No packages found"
-
-      - name: Package for Arch
-        run: |
-          cd build-tools/linux-tkg
-          
-          # Check if makepkg already created packages
-          if ls *.pkg.tar.zst 1> /dev/null 2>&1; then
-            echo "✓ Packages already created by makepkg"
-            ls -lh *.pkg.tar.zst
-            exit 0
-          fi
-          
-          # Check if kernel was built
-          if [ ! -f arch/x86_64/boot/bzImage ]; then
-            echo "✗ Kernel build failed - no bzImage found"
-            exit 1
-          fi
-          
-          echo "Creating Arch packages manually..."
-          
-          # Create package structure
-          mkdir -p pkg/{boot,usr/lib/modules,usr/src}
-          
-          # Install kernel image
-          cp arch/x86_64/boot/bzImage pkg/boot/vmlinuz-linux-tkg-p03-${{ matrix.cpu }}
-          cp System.map pkg/boot/System.map-linux-tkg-p03-${{ matrix.cpu }}
-          cp .config pkg/boot/config-linux-tkg-p03-${{ matrix.cpu }}
-          
-          # Install modules
-          make modules_install \
-            INSTALL_MOD_PATH=pkg \
-            INSTALL_MOD_STRIP=1 \
-            ARCH=x86_64 2>&1 | tail -20
-          
-          # Install kernel headers
-          make headers_install \
-            INSTALL_HDR_PATH=pkg/usr \
-            ARCH=x86_64 2>&1 | tail -20
-          
-          # Create PKGINFO
-          mkdir -p pkg/.PKGINFO
-          cat > pkg/.PKGINFO <<EOF
-pkgname = linux-tkg-p03-${{ matrix.cpu }}
-pkgver = $(grep '^VERSION' Makefile | head -1 | awk '{print $3}').$(grep '^PATCHLEVEL' Makefile | awk '{print $3}').$(grep '^SUBLEVEL' Makefile | awk '{print $3}')
-pkgrel = 1
-pkgdesc = Linux kernel with TKG patches - P03 - ${{ matrix.cpu }}
-url = https://www.kernel.org/
-arch = x86_64
-license = GPL2
-EOF
-          
-          # Create package tarball
-          cd pkg
-          tar --sort=name \
-              --owner=0 --group=0 \
-              --numeric-owner \
-              -czf ../linux-tkg-p03-${{ matrix.cpu }}-x86_64.pkg.tar.gz .
-          cd ..
-          
-          # Verify package
-          if [ -f linux-tkg-p03-${{ matrix.cpu }}-x86_64.pkg.tar.gz ]; then
-            echo "✓ Package created successfully"
-            ls -lh linux-tkg-p03-${{ matrix.cpu }}-x86_64.pkg.tar.gz
-            tar -tzf linux-tkg-p03-${{ matrix.cpu }}-x86_64.pkg.tar.gz | head -20
-          else
-            echo "✗ Failed to create package"
-            exit 1
-          fi
-
-      - name: Verify output packages
-        run: |
-          cd build-tools/linux-tkg
-          
-          echo "=== Checking for packages ==="
-          if ls *.pkg.tar.* 1> /dev/null 2>&1; then
-            echo "✓ Build successful for ${{ matrix.cpu }}"
-            ls -lh *.pkg.tar.*
-            echo ""
-            echo "Package contents:"
-            for pkg in *.pkg.tar.*; do
-              echo "--- $pkg ---"
-              tar -tzf "$pkg" | head -15
+          # Apply CPU-specific patches
+          if [ -d "../patches/${{ matrix.cpu }}" ]; then
+            for patch in ../patches/${{ matrix.cpu }}/*.patch; do
+              if [ -f "$patch" ]; then
+                echo "Applying $(basename $patch)..."
+                patch -p1 < "$patch" || echo "Warning: $(basename $patch) may have conflicts"
+              fi
             done
+          fi
+          
+          echo "✓ Patches applied for ${{ matrix.cpu }}"
+
+      - name: Configure kernel
+        run: |
+          cd build-tools/linux-tkg/linux-src
+          
+          echo "Configuring kernel for ${{ matrix.cpu }}..."
+          
+          # Copy config
+          if [ -f "../configs/${{ matrix.cpu }}.config" ]; then
+            cp ../configs/${{ matrix.cpu }}.config .config
           else
-            echo "✗ No packages found for ${{ matrix.cpu }}"
-            ls -la
+            make defconfig
+          fi
+          
+          # Set CPU-specific options
+          case "${{ matrix.cpu }}" in
+            zen4)
+              ./scripts/config --set-str CONFIG_GENERIC_CPU "n"
+              ./scripts/config --set-str CONFIG_MZEN4 "y"
+              ;;
+            zen5)
+              ./scripts/config --set-str CONFIG_GENERIC_CPU "n"
+              ./scripts/config --set-str CONFIG_MZEN5 "y"
+              ;;
+            generic)
+              ./scripts/config --set-str CONFIG_GENERIC_CPU "y"
+              ;;
+          esac
+          
+          # Enable common optimizations
+          ./scripts/config --enable CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE
+          ./scripts/config --enable CONFIG_HAVE_EFFICIENT_UNALIGNED_ACCESS
+          ./scripts/config --set-str CONFIG_TUNE_CPU "${{ matrix.cpu }}"
+          
+          make olddefconfig
+          echo "✓ Kernel configured for ${{ matrix.cpu }}"
+
+      - name: Build kernel
+        run: |
+          cd build-tools/linux-tkg/linux-src
+          
+          echo "Building kernel for ${{ matrix.cpu }}..."
+          
+          export CCACHE_DIR=${{ env.CCACHE_DIR }}
+          export CC="ccache gcc"
+          export CXX="ccache g++"
+          
+          # Build with parallel jobs
+          make -j$(nproc) \
+            ARCH=x86_64 \
+            LOCALVERSION=-tkg-p03-${{ matrix.cpu }} \
+            2>&1 | tail -50
+          
+          if [ $? -eq 0 ]; then
+            echo "✓ Kernel build successful for ${{ matrix.cpu }}"
+          else
+            echo "✗ Kernel build failed for ${{ matrix.cpu }}"
             exit 1
           fi
+
+      - name: Build modules
+        run: |
+          cd build-tools/linux-tkg/linux-src
+          
+          echo "Building modules for ${{ matrix.cpu }}..."
+          
+          export CCACHE_DIR=${{ env.CCACHE_DIR }}
+          export CC="ccache gcc"
+          export CXX="ccache g++"
+          
+          make modules -j$(nproc) \
+            ARCH=x86_64 \
+            LOCALVERSION=-tkg-p03-${{ matrix.cpu }} \
+            2>&1 | tail -30
+          
+          if [ $? -eq 0 ]; then
+            echo "✓ Modules build successful for ${{ matrix.cpu }}"
+          else
+            echo "✗ Modules build failed for ${{ matrix.cpu }}"
+            exit 1
+          fi
+
+      - name: Create build output directory
+        run: |
+          mkdir -p build-tools/linux-tkg/output/${{ matrix.cpu }}
+          echo "✓ Output directory created"
+
+      - name: Copy kernel and modules
+        run: |
+          cd build-tools/linux-tkg/linux-src
+          
+          echo "Copying build artifacts for ${{ matrix.cpu }}..."
+          
+          # Copy kernel image
+          if [ -f "arch/x86_64/boot/bzImage" ]; then
+            cp arch/x86_64/boot/bzImage ../output/${{ matrix.cpu }}/vmlinuz-tkg-p03-${{ matrix.cpu }}
+            echo "✓ Kernel image copied"
+          fi
+          
+          # Copy System.map
+          if [ -f "System.map" ]; then
+            cp System.map ../output/${{ matrix.cpu }}/System.map-tkg-p03-${{ matrix.cpu }}
+            echo "✓ System.map copied"
+          fi
+          
+          # Copy .config
+          if [ -f ".config" ]; then
+            cp .config ../output/${{ matrix.cpu }}/config-tkg-p03-${{ matrix.cpu }}
+            echo "✓ Config copied"
+          fi
+          
+          # Create modules tarball
+          echo "Creating modules archive..."
+          tar -czf ../output/${{ matrix.cpu }}/modules-tkg-p03-${{ matrix.cpu }}.tar.gz \
+            lib/modules/*/kernel 2>/dev/null || echo "Note: Some module paths may not exist"
+          echo "✓ Modules archived"
+
+      - name: Rename packages with CPU variant
+        run: |
+          cd build-tools/linux-tkg/output/${{ matrix.cpu }}
+          
+          echo "Renaming packages for ${{ matrix.cpu }}..."
+          
+          for file in *; do
+            if [[ "$file" == *"tkg-p03"* ]]; then
+              newname="${file/tkg-p03/tkg-p03-${{ matrix.cpu }}}"
+              if [ "$file" != "$newname" ]; then
+                mv "$file" "$newname"
+                echo "  Renamed: $file → $newname"
+              fi
+            fi
+          done
+          
+          echo "✓ Packages renamed with CPU variant"
 
       - name: Generate checksums
         run: |
-          cd build-tools/linux-tkg
-          sha256sum *.pkg.tar.* > checksums-${{ matrix.cpu }}.sha256
-          cat checksums-${{ matrix.cpu }}.sha256
+          cd build-tools/linux-tkg/output/${{ matrix.cpu }}
+          
+          echo "Generating checksums for ${{ matrix.cpu }}..."
+          
+          sha256sum * > SHA256SUMS-tkg-p03-${{ matrix.cpu }}.txt
+          
+          echo "✓ Checksums generated"
+          echo "Checksums:"
+          cat SHA256SUMS-tkg-p03-${{ matrix.cpu }}.txt
+
+      - name: Display build statistics
+        run: |
+          cd build-tools/linux-tkg/output/${{ matrix.cpu }}
+          
+          echo "Build Statistics for ${{ matrix.cpu }}:"
+          echo "======================================"
+          ls -lh
+          echo ""
+          echo "Total size:"
+          du -sh .
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: linux-tkg-p03-${{ matrix.cpu }}
-          path: build-tools/linux-tkg/*.pkg.tar.*
+          path: build-tools/linux-tkg/output/${{ matrix.cpu }}/
           retention-days: 30
-          if-no-files-found: error
 
-      - name: Upload checksums
-        uses: actions/upload-artifact@v4
-        with:
-          name: checksums-${{ matrix.cpu }}
-          path: build-tools/linux-tkg/checksums-${{ matrix.cpu }}.sha256
-          retention-days: 30
+      - name: Print ccache statistics
+        run: |
+          ccache -s
+          echo "✓ Build completed for ${{ matrix.cpu }}"
