@@ -57,11 +57,25 @@ jobs:
           file: ./build-tools/Dockerfile
           build-args: |
             CPU_TYPE=${{ matrix.cpu-type }}
+            _processor_opt=${{ matrix.cpu-type }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Generate build info
+        run: |
+          echo "CPU_TYPE=${{ matrix.cpu-type }}" >> build-${{ matrix.cpu-type }}.info
+          echo "BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> build-${{ matrix.cpu-type }}.info
+          echo "GIT_SHA=${{ github.sha }}" >> build-${{ matrix.cpu-type }}.info
+
+      - name: Upload build info artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-info-${{ matrix.cpu-type }}
+          path: build-${{ matrix.cpu-type }}.info
+          retention-days: 30
 
   create-release:
     needs: build-matrix
@@ -71,8 +85,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4.2.0
 
-      - name: Create Release
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      - name: Create Release with build info
         uses: softprops/action-gh-release@v1
         with:
           draft: false
           prerelease: false
+          files: artifacts/**/*
+          body: |
+            # Linux TKG P03 - Multi-CPU Build Release
+            
+            This release contains optimized kernels for the following CPU architectures:
+            - AMD Zen3, Zen4, Zen4C
+            - Generic (x86-64, v3, v4)
+            - Intel Haswell, Skylake, Broadwell
+            
+            Each variant is built with architecture-specific optimizations for maximum performance.
