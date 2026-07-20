@@ -27,9 +27,24 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential libncurses-dev flex bison libssl-dev \
-            libelf-dev bc pahole git wget cpio kmod \
-            clang llvm lld llvm-tools
+            base-devel \
+            git \
+            clang \
+            lld \
+            llvm \
+            llvm-dev \
+            clang-tools \
+            cmake \
+            ninja-build \
+            pahole \
+            libelf-dev \
+            libssl-dev \
+            bc \
+            kmod \
+            cpio \
+            flex \
+            bison \
+            dwarves
 
       - name: Clone/update linux-tkg
         run: |
