@@ -83,14 +83,17 @@ jobs:
       - name: Build TKG P03 for ${{ matrix.cpu }}
         run: |
           cd build-tools/linux-tkg
-          export _NUKR=true
-          export CC=clang
-          export CXX=clang++
+          
+          # Set compiler to specific version if needed
+          export CC=clang-18
+          export CXX=clang++-18
+          export LD=lld-18
           export LLVM=1
           export LLVM_IAS=1
+          export _NUKR=true
           
           echo "Building with Clang/LLVM + ThinLTO..."
-          makepkg -s --noconfirm --skippgpcheck 2>&1 | tail -50
+          makepkg -s --noconfirm --skippgpcheck
 
       - name: Verify output packages
         run: |
