@@ -1,265 +1,137 @@
 name: Linux TKG P03 Build All CPUs
 
 on:
+  schedule:
+    - cron: '0 2 * * *'  # Daily at 2 AM UTC
+  workflow_dispatch:
   push:
     branches:
       - main
-  workflow_dispatch:
-
-env:
-  CCACHE_DIR: ${{ github.workspace }}/.ccache
-  CCACHE_MAXSIZE: 5G
 
 jobs:
+  check-kernel-update:
+    runs-on: ubuntu-latest
+    outputs:
+      needs_update: ${{ steps.check.outputs.needs_update }}
+      new_version: ${{ steps.check.outputs.new_version }}
+      current_version: ${{ steps.check.outputs.current_version }}
+    
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check kernel version
+        id: check
+        run: |
+          CURRENT=$(curl -s https://www.kernel.org/releases.json | jq -r '.releases[0].version')
+          LATEST=$(cat VERSION 2>/dev/null || echo "0.0.0")
+          
+          echo "current_version=$LATEST" >> $GITHUB_OUTPUT
+          echo "new_version=$CURRENT" >> $GITHUB_OUTPUT
+          
+          if [ "$CURRENT" != "$LATEST" ]; then
+            echo "needs_update=true" >> $GITHUB_OUTPUT
+            echo "✓ New kernel available: $CURRENT (current: $LATEST)"
+          else
+            echo "needs_update=false" >> $GITHUB_OUTPUT
+            echo "✓ Already on latest: $CURRENT"
+          fi
+
   build:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        cpu: [generic, zen4, zen5]
-      fail-fast: false
+        cpu: [generic, native, zen, zen2, zen3, zen4, generic-v2, generic-v3, generic-v4]
     
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up build environment
+      - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            build-essential \
+            base-devel \
             git \
-            wget \
-            ccache \
-            libncurses-dev \
-            flex \
-            bison \
-            libssl-dev \
+            gcc \
+            make \
             libelf-dev \
-            dwarves \
-            python3 \
+            libssl-dev \
+            bison \
+            flex \
+            clang \
+            lld \
+            llvm \
             pahole \
-            bc \
-            cpio \
-            rsync \
-            tar \
-            gzip \
-            xz-utils
+            dwarves \
+            fakeroot \
+            devscripts \
+            build-essential
 
-      - name: Cache ccache
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.CCACHE_DIR }}
-          key: ccache-${{ matrix.cpu }}-${{ github.sha }}
-          restore-keys: |
-            ccache-${{ matrix.cpu }}-
-            ccache-
-
-      - name: Initialize ccache
+      - name: Clone linux-tkg
         run: |
-          ccache -z
-          ccache -s
+          git clone https://github.com/Frogging-Family/linux-tkg.git
+          cd linux-tkg
+          git log --oneline -1
 
-      - name: Download Linux kernel source
+      - name: Set CPU optimization - ${{ matrix.cpu }}
+        working-directory: linux-tkg
         run: |
-          cd build-tools/linux-tkg
-          if [ ! -f linux-*.tar.xz ]; then
-            echo "Downloading kernel source..."
-            wget -q https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.13.tar.xz
-            tar -xf linux-6.13.tar.xz
-            mv linux-6.13 linux-src
-          fi
+          sed -i 's/_cpusched=.*/_cpusched=${{ matrix.cpu }}/' customization.cfg
 
-      - name: Apply TKG patches
+      - name: Build kernel - ${{ matrix.cpu }}
+        working-directory: linux-tkg
         run: |
-          cd build-tools/linux-tkg/linux-src
-          
-          echo "Applying TKG patches for ${{ matrix.cpu }}..."
-          
-          # Apply base patches
-          for patch in ../patches/base/*.patch; do
-            if [ -f "$patch" ]; then
-              echo "Applying $(basename $patch)..."
-              patch -p1 < "$patch" || echo "Warning: $(basename $patch) may have conflicts"
-            fi
-          done
-          
-          # Apply CPU-specific patches
-          if [ -d "../patches/${{ matrix.cpu }}" ]; then
-            for patch in ../patches/${{ matrix.cpu }}/*.patch; do
-              if [ -f "$patch" ]; then
-                echo "Applying $(basename $patch)..."
-                patch -p1 < "$patch" || echo "Warning: $(basename $patch) may have conflicts"
-              fi
-            done
-          fi
-          
-          echo "✓ Patches applied for ${{ matrix.cpu }}"
-
-      - name: Configure kernel
-        run: |
-          cd build-tools/linux-tkg/linux-src
-          
-          echo "Configuring kernel for ${{ matrix.cpu }}..."
-          
-          # Copy config
-          if [ -f "../configs/${{ matrix.cpu }}.config" ]; then
-            cp ../configs/${{ matrix.cpu }}.config .config
-          else
-            make defconfig
-          fi
-          
-          # Set CPU-specific options
-          case "${{ matrix.cpu }}" in
-            zen4)
-              ./scripts/config --set-str CONFIG_GENERIC_CPU "n"
-              ./scripts/config --set-str CONFIG_MZEN4 "y"
-              ;;
-            zen5)
-              ./scripts/config --set-str CONFIG_GENERIC_CPU "n"
-              ./scripts/config --set-str CONFIG_MZEN5 "y"
-              ;;
-            generic)
-              ./scripts/config --set-str CONFIG_GENERIC_CPU "y"
-              ;;
-          esac
-          
-          # Enable common optimizations
-          ./scripts/config --enable CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE
-          ./scripts/config --enable CONFIG_HAVE_EFFICIENT_UNALIGNED_ACCESS
-          ./scripts/config --set-str CONFIG_TUNE_CPU "${{ matrix.cpu }}"
-          
-          make olddefconfig
-          echo "✓ Kernel configured for ${{ matrix.cpu }}"
-
-      - name: Build kernel
-        run: |
-          cd build-tools/linux-tkg/linux-src
-          
-          echo "Building kernel for ${{ matrix.cpu }}..."
-          
-          export CCACHE_DIR=${{ env.CCACHE_DIR }}
-          export CC="ccache gcc"
-          export CXX="ccache g++"
-          
-          # Build with parallel jobs
-          make -j$(nproc) \
-            ARCH=x86_64 \
-            LOCALVERSION=-tkg-p03-${{ matrix.cpu }} \
-            2>&1 | tail -50
-          
-          if [ $? -eq 0 ]; then
-            echo "✓ Kernel build successful for ${{ matrix.cpu }}"
-          else
-            echo "✗ Kernel build failed for ${{ matrix.cpu }}"
-            exit 1
-          fi
-
-      - name: Build modules
-        run: |
-          cd build-tools/linux-tkg/linux-src
-          
-          echo "Building modules for ${{ matrix.cpu }}..."
-          
-          export CCACHE_DIR=${{ env.CCACHE_DIR }}
-          export CC="ccache gcc"
-          export CXX="ccache g++"
-          
-          make modules -j$(nproc) \
-            ARCH=x86_64 \
-            LOCALVERSION=-tkg-p03-${{ matrix.cpu }} \
-            2>&1 | tail -30
-          
-          if [ $? -eq 0 ]; then
-            echo "✓ Modules build successful for ${{ matrix.cpu }}"
-          else
-            echo "✗ Modules build failed for ${{ matrix.cpu }}"
-            exit 1
-          fi
-
-      - name: Create build output directory
-        run: |
-          mkdir -p build-tools/linux-tkg/output/${{ matrix.cpu }}
-          echo "✓ Output directory created"
-
-      - name: Copy kernel and modules
-        run: |
-          cd build-tools/linux-tkg/linux-src
-          
-          echo "Copying build artifacts for ${{ matrix.cpu }}..."
-          
-          # Copy kernel image
-          if [ -f "arch/x86_64/boot/bzImage" ]; then
-            cp arch/x86_64/boot/bzImage ../output/${{ matrix.cpu }}/vmlinuz-tkg-p03-${{ matrix.cpu }}
-            echo "✓ Kernel image copied"
-          fi
-          
-          # Copy System.map
-          if [ -f "System.map" ]; then
-            cp System.map ../output/${{ matrix.cpu }}/System.map-tkg-p03-${{ matrix.cpu }}
-            echo "✓ System.map copied"
-          fi
-          
-          # Copy .config
-          if [ -f ".config" ]; then
-            cp .config ../output/${{ matrix.cpu }}/config-tkg-p03-${{ matrix.cpu }}
-            echo "✓ Config copied"
-          fi
-          
-          # Create modules tarball
-          echo "Creating modules archive..."
-          tar -czf ../output/${{ matrix.cpu }}/modules-tkg-p03-${{ matrix.cpu }}.tar.gz \
-            lib/modules/*/kernel 2>/dev/null || echo "Note: Some module paths may not exist"
-          echo "✓ Modules archived"
-
-      - name: Rename packages with CPU variant
-        run: |
-          cd build-tools/linux-tkg/output/${{ matrix.cpu }}
-          
-          echo "Renaming packages for ${{ matrix.cpu }}..."
-          
-          for file in *; do
-            if [[ "$file" == *"tkg-p03"* ]]; then
-              newname="${file/tkg-p03/tkg-p03-${{ matrix.cpu }}}"
-              if [ "$file" != "$newname" ]; then
-                mv "$file" "$newname"
-                echo "  Renamed: $file → $newname"
-              fi
-            fi
-          done
-          
-          echo "✓ Packages renamed with CPU variant"
+          chmod +x makepkg
+          makepkg -s --noconfirm 2>&1 | tee build-${{ matrix.cpu }}.log
 
       - name: Generate checksums
+        working-directory: linux-tkg
         run: |
-          cd build-tools/linux-tkg/output/${{ matrix.cpu }}
-          
-          echo "Generating checksums for ${{ matrix.cpu }}..."
-          
-          sha256sum * > SHA256SUMS-tkg-p03-${{ matrix.cpu }}.txt
-          
-          echo "✓ Checksums generated"
-          echo "Checksums:"
-          cat SHA256SUMS-tkg-p03-${{ matrix.cpu }}.txt
-
-      - name: Display build statistics
-        run: |
-          cd build-tools/linux-tkg/output/${{ matrix.cpu }}
-          
-          echo "Build Statistics for ${{ matrix.cpu }}:"
-          echo "======================================"
-          ls -lh
-          echo ""
-          echo "Total size:"
-          du -sh .
+          sha256sum *.pkg.tar.zst > checksums-${{ matrix.cpu }}.txt
+          cat checksums-${{ matrix.cpu }}.txt
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: linux-tkg-p03-${{ matrix.cpu }}
-          path: build-tools/linux-tkg/output/${{ matrix.cpu }}/
+          name: kernel-${{ matrix.cpu }}
+          path: |
+            linux-tkg/*.pkg.tar.zst
+            linux-tkg/checksums-${{ matrix.cpu }}.txt
+            linux-tkg/build-${{ matrix.cpu }}.log
           retention-days: 30
 
-      - name: Print ccache statistics
+  verify:
+    needs: build
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+
+      - name: Verify all builds
         run: |
-          ccache -s
-          echo "✓ Build completed for ${{ matrix.cpu }}"
+          echo "=== Build Verification ==="
+          for dir in kernel-*/; do
+            cpu=$(echo "$dir" | sed 's/kernel-//;s/\///')
+            echo "✓ $cpu:"
+            ls -lh "$dir"/*.pkg.tar.zst 2>/dev/null | awk '{print "  " $9 " (" $5 ")"}'
+            cat "$dir"/checksums-*.txt 2>/dev/null || echo "  No checksums found"
+          done
+          echo ""
+          echo "Total packages: $(find . -name '*.pkg.tar.zst' | wc -l)"
+
+  release:
+    needs: verify
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    
+    steps:
+      - uses: actions/download-artifact@v4
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: kernel-*/*.pkg.tar.zst
+          body: |
+            Linux TKG P03 Kernel Build
+            Built for: generic, native, zen, zen2, zen3, zen4, generic-v2, generic-v3, generic-v4
+            Verify checksums before installing!
