@@ -46,7 +46,11 @@ jobs:
             pahole \
             cpio \
             kmod \
-            dwarves
+            dwarves \
+            pkg-config \
+            libncurses-dev \
+            python3 \
+            python3-dev
 
       - name: Clone/update linux-tkg
         run: |
@@ -75,11 +79,14 @@ jobs:
           
           # Stage patches as .mypatch (linux-tkg auto-applies them)
           mkdir -p "$TKG/mypatches"
-          for p in patches/*.patch; do
-            [ -f "$p" ] && cp "$p" "$TKG/$(basename "${p%.patch}").mypatch"
-          done
-          
-          echo "✓ Staged $(ls "$TKG"/*.mypatch 2>/dev/null | wc -l) patches"
+          if [ -d patches ]; then
+            for p in patches/*.patch; do
+              [ -f "$p" ] && cp "$p" "$TKG/$(basename "${p%.patch}").mypatch"
+            done
+            echo "✓ Staged $(ls "$TKG"/*.mypatch 2>/dev/null | wc -l) patches"
+          else
+            echo "⚠ No patches directory found"
+          fi
           echo "✓ Config ready"
 
       - name: Build TKG P03 for ${{ matrix.cpu }}
@@ -94,65 +101,178 @@ jobs:
           export LLVM_IAS=1
           export _NUKR=true
           
-          echo "Building with Clang/LLVM + ThinLTO..."
+          echo "Building with Clang/LLVM..."
+          echo "Current directory: $(pwd)"
+          echo "Contents:"
+          ls -la | head -20
           
-          # Use makepkg if PKGBUILD exists, otherwise manual build
+          # Check for PKGBUILD
           if [ -f PKGBUILD ]; then
+            echo "Found PKGBUILD, using makepkg..."
             makepkg -s --noconfirm --skippgpcheck 2>&1 | tee build.log
+            BUILD_STATUS=${PIPESTATUS[0]}
           else
-            echo "No PKGBUILD found, using manual build approach"
+            echo "No PKGBUILD, using manual kernel build..."
+            
+            # Generate .config from customization.cfg
+            if [ -f customization.cfg ]; then
+              echo "Using customization.cfg to generate config..."
+              bash -c "source customization.cfg; make menuconfig" || make defconfig
+            else
+              echo "No customization.cfg, using defconfig..."
+              make defconfig
+            fi
+            
+            # Build kernel
             make -j$(nproc) \
               ARCH=x86_64 \
               CROSS_COMPILE= \
               all modules 2>&1 | tee build.log
+            BUILD_STATUS=${PIPESTATUS[0]}
+          fi
+          
+          # Debug output
+          echo "=== Build Status: $BUILD_STATUS ==="
+          echo "=== Checking for kernel image ==="
+          ls -la arch/x86_64/boot/ 2>/dev/null || echo "arch/x86_64/boot/ not found"
+          find . -maxdepth 3 -name "bzImage" -o -name "vmlinuz" 2>/dev/null || echo "No kernel image found"
+          
+          if [ $BUILD_STATUS -ne 0 ]; then
+            echo "Build failed, showing last 100 lines of log:"
+            tail -100 build.log
+            exit 1
           fi
 
       - name: Package for Arch
         run: |
           cd build-tools/linux-tkg
           
-          # If makepkg already created packages, we're done
-          if ls linux-tkg-p03*.pkg.tar.zst 1> /dev/null 2>&1; then
+          # Check if makepkg already created packages
+          if ls *.pkg.tar.zst 1> /dev/null 2>&1; then
             echo "✓ Packages already created by makepkg"
-            ls -lh linux-tkg-p03*.pkg.tar.zst
+            ls -lh *.pkg.tar.zst
+            exit 0
+          fi
+          
+          # Check if kernel was built
+          if [ ! -f arch/x86_64/boot/bzImage ]; then
+            echo "✗ Kernel build failed - no bzImage found"
+            exit 1
+          fi
+          
+          echo "Creating Arch packages manually..."
+          
+          # Create package structure
+          mkdir -p pkg/{boot,usr/lib/modules,usr/src}
+          
+          # Install kernel image
+          cp arch/x86_64/boot/bzImage pkg/boot/vmlinuz-linux-tkg-p03-${{ matrix.cpu }}
+          cp System.map pkg/boot/System.map-linux-tkg-p03-${{ matrix.cpu }}
+          cp .config pkg/boot/config-linux-tkg-p03-${{ matrix.cpu }}
+          
+          # Install modules
+          make modules_install \
+            INSTALL_MOD_PATH=pkg \
+            INSTALL_MOD_STRIP=1 \
+            ARCH=x86_64 2>&1 | tail -20
+          
+          # Install kernel headers
+          make headers_install \
+            INSTALL_HDR_PATH=pkg/usr \
+            ARCH=x86_64 2>&1 | tail -20
+          
+          # Create PKGINFO
+          mkdir -p pkg/.PKGINFO
+          cat > pkg/.PKGINFO <<EOF
+pkgname = linux-tkg-p03-${{ matrix.cpu }}
+pkgver = $(grep '^VERSION' Makefile | head -1 | awk '{print $3}').$(grep '^PATCHLEVEL' Makefile | awk '{print $3}').$(grep '^SUBLEVEL' Makefile | awk '{print $3}')
+pkgrel = 1
+pkgdesc = Linux kernel with TKG patches - P03 - ${{ matrix.cpu }}
+url = https://www.kernel.org/
+arch = x86_64
+license = GPL2
+EOF
+          
+          # Create package tarball
+          cd pkg
+          tar --sort=name \
+              --owner=0 --group=0 \
+              --numeric-owner \
+              -czf ../linux-tkg-p03-${{ matrix.cpu }}-x86_64.pkg.tar.gz .
+          cd ..
+          
+          # Verify package
+          if [ -f linux-tkg-p03-${{ matrix.cpu }}-x86_64.pkg.tar.gz ]; then
+            echo "✓ Package created successfully"
+            ls -lh linux-tkg-p03-${{ matrix.cpu }}-x86_64.pkg.tar.gz
+            tar -tzf linux-tkg-p03-${{ matrix.cpu }}-x86_64.pkg.tar.gz | head -20
           else
-            echo "Creating Arch packages manually..."
-            
-            # Create package directories
-            mkdir -p pkg/boot pkg/usr/lib/modules
-            
-            # Install kernel
-            mkdir -p pkg/boot
-            cp arch/x86_64/boot/bzImage pkg/boot/vmlinuz-linux-tkg-p03-${{ matrix.cpu }}
-            cp System.map pkg/boot/System.map-linux-tkg-p03-${{ matrix.cpu }}
-            cp .config pkg/boot/config-linux-tkg-p03-${{ matrix.cpu }}
-            
-            # Install modules
-            make modules_install \
-              INSTALL_MOD_PATH=pkg \
-              ARCH=x86_64
-            
-            # Create tar package
-            cd pkg
-            tar -czf ../linux-tkg-p03-${{ matrix.cpu }}-x86_64.pkg.tar.gz *
-            cd ..
-            
-            ls -lh linux-tkg-p03*.pkg.tar.*
+            echo "✗ Failed to create package"
+            exit 1
           fi
 
       - name: Verify output packages
         run: |
           cd build-tools/linux-tkg
-          if ls linux-tkg-p03*.pkg.tar.* 1> /dev/null 2>&1; then
-            echo "✓ Build successful"
-            ls -lh linux-tkg-p03*.pkg.tar.*
+          
+          echo "=== Checking for packages ==="
+          if ls *.pkg.tar.* 1> /dev/null 2>&1; then
+            echo "✓ Build successful for ${{ matrix.cpu }}"
+            ls -lh *.pkg.tar.*
+            echo ""
+            echo "Package contents:"
+            for pkg in *.pkg.tar.*; do
+              echo "--- $pkg ---"
+              tar -tzf "$pkg" | head -15
+            done
           else
-            echo "✗ No packages found!"
+            echo "✗ No packages found for ${{ matrix.cpu }}"
+            ls -la
             exit 1
           fi
 
       - name: Generate checksums
         run: |
           cd build-tools/linux-tkg
-          sha256sum linux-tkg-p03*.pkg.tar.* > /tmp/p03-${{ matrix.cpu }}.sha256
-          cat /tmp/p03-$
+          sha256sum *.pkg.tar.* > checksums-${{ matrix.cpu }}.sha256
+          cat checksums-${{ matrix.cpu }}.sha256
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-tkg-p03-${{ matrix.cpu }}
+          path: build-tools/linux-tkg/*.pkg.tar.*
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Upload checksums
+        uses: actions/upload-artifact@v4
+        with:
+          name: checksums-${{ matrix.cpu }}
+          path: build-tools/linux-tkg/checksums-${{ matrix.cpu }}.sha256
+          retention-days: 30
+
+  collect-artifacts:
+    needs: build
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create release summary
+        run: |
+          echo "# Linux TKG P03 Build Summary" > /tmp/summary.md
+          echo "" >> /tmp/summary.md
+          echo "## Build Results" >> /tmp/summary.md
+          echo "" >> /tmp/summary.md
+          
+          for cpu in generic native zen zen2 zen3 zen4; do
+            if [ -d "artifacts/linux-tkg-p03-$cpu" ]; then
+              echo "### $cpu" >> /tmp/summary.md
+              ls -lh artifacts/linux-tkg-p03-$cpu/*.pkg.tar.* 2>/dev/null | awk '{print "- " $9 " (" $5 ")"}' >> /tmp/summary.md
+              if [ -f "artifacts/checksums-$cpu/checksums-$cpu.sha256" ]; then
+                echo '```' >> /tmp/summary.md
+                cat artifacts/checksums-$cpu/checksums-$cpu.sha256 >> /tmp/
