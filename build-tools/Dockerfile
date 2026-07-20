@@ -2,6 +2,7 @@ FROM archlinux:latest
 
 ARG CPU_TYPE=generic
 
+# Update system and install build dependencies
 RUN pacman -Syu --noconfirm && \
     pacman -S --noconfirm \
     base-devel \
@@ -10,9 +11,10 @@ RUN pacman -Syu --noconfirm && \
     lld \
     git \
     ccache \
-    sudo
+    sudo && \
+    pacman -Scc --noconfirm  # Clean package cache to reduce image size
 
-# Create a non-root user for building
+# Create non-root user for building
 RUN useradd -m -s /bin/bash builder && \
     echo "builder ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers.d/builder
 
@@ -21,24 +23,23 @@ WORKDIR /linux-tkg
 # Clone linux-tkg
 RUN git clone https://github.com/Frogging-Family/linux-tkg.git .
 
-# Copy your customization and patches
+# Copy customization files
 COPY linux-tkg-p03/customization.cfg ./customization.cfg
 COPY linux-tkg-p03/patches/ ./patches/
 COPY linux-tkg-p03/p03.config ./p03.config
 COPY linux-tkg-p03/build.sh /build-tools/build.sh
 
-RUN chmod +x /build-tools/build.sh
-
-# Change ownership to builder user
-RUN chown -R builder:builder /linux-tkg /build-tools
+# Set permissions
+RUN chmod +x /build-tools/build.sh && \
+    chown -R builder:builder /linux-tkg /build-tools /output
 
 # Create output directory
-RUN mkdir -p /output && chown builder:builder /output
+RUN mkdir -p /output
 
 # Switch to builder user
 USER builder
 
-# Set environment variables - pass CPU_TYPE to build.sh
+# Set environment variables
 ENV CPU_TYPE=${CPU_TYPE} \
     _compiler=llvm \
     _lto_mode=thin \
