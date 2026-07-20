@@ -69,11 +69,28 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Extract kernel packages from container
+        run: |
+          mkdir -p output-${{ matrix.cpu-type }}
+          docker run --rm \
+            -v $(pwd)/output-${{ matrix.cpu-type }}:/output \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ matrix.cpu-type }}-latest \
+            sh -c 'cp -v /output/*.pkg.tar.* /output/ 2>/dev/null || echo "No packages found"'
+
       - name: Generate build info
         run: |
           echo "CPU_TYPE=${{ matrix.cpu-type }}" >> build-${{ matrix.cpu-type }}.info
           echo "BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> build-${{ matrix.cpu-type }}.info
           echo "GIT_SHA=${{ github.sha }}" >> build-${{ matrix.cpu-type }}.info
+          echo "PACKAGES=$(ls -1 output-${{ matrix.cpu-type }}/*.pkg.tar.* 2>/dev/null | wc -l)" >> build-${{ matrix.cpu-type }}.info
+
+      - name: Upload kernel packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-${{ matrix.cpu-type }}
+          path: output-${{ matrix.cpu-type }}/*.pkg.tar.*
+          retention-days: 30
+          if-no-files-found: warn
 
       - name: Upload build info artifact
         uses: actions/upload-artifact@v4
@@ -95,6 +112,9 @@ jobs:
         with:
           path: artifacts/
 
+      - name: List downloaded artifacts
+        run: find artifacts/ -type f
+
       - name: Create Release with build info
         uses: softprops/action-gh-release@v1
         with:
@@ -110,3 +130,8 @@ jobs:
             - Intel Haswell, Skylake, Broadwell
             
             Each variant is built with architecture-specific optimizations for maximum performance.
+            
+            Build Info:
+            - Build Date: ${{ github.event.head_commit.timestamp }}
+            - Git SHA: ${{ github.sha }}
+            - Trigger: ${{ github.event_name }}
