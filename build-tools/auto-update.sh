@@ -1,32 +1,39 @@
-# ===== KERNEL AUTO-UPDATE =====
+name: Auto-Update Kernel
 
-# Check latest kernel version
-get_latest_kernel() {
-    curl -s https://www.kernel.org/releases.json | jq -r '.releases[0].version' 2>/dev/null || echo ""
-}
+on:
+  schedule:
+    - cron: '0 2 * * *'  # Daily at 2 AM UTC
+  workflow_dispatch:
 
-# Get current version from build.sh
-get_current_kernel_version() {
-    grep 'KERNEL_VERSION=' zen3/latest/build.sh | head -1 | cut -d'"' -f2
-}
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-# Update all kernel build scripts
-update_kernel_scripts() {
-    local new_version="$1"
-    sed -i "s/KERNEL_VERSION=\"[0-9.]*\"/KERNEL_VERSION=\"$new_version\"/" zen3/latest/build.sh
-    sed -i "s/KERNEL_VERSION=\"[0-9.]*\"/KERNEL_VERSION=\"$new_version\"/" zen3/lts/build.sh
-    sed -i "s/KERNEL_VERSION=\"[0-9.]*\"/KERNEL_VERSION=\"$new_version\"/" zen3/rc/build.sh
-    echo "Kernel updated to $new_version"
-}
+      - name: Check and update kernel version
+        run: |
+          LATEST=$(curl -s https://www.kernel.org/releases.json | jq -r '.releases[0].version')
+          CURRENT=$(cat VERSION 2>/dev/null || echo "0.0.0")
+          
+          echo "Current: $CURRENT"
+          echo "Latest: $LATEST"
+          
+          if [ "$LATEST" != "$CURRENT" ]; then
+            echo "$LATEST" > VERSION
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add VERSION
+            git commit -m "chore: update kernel to $LATEST"
+            git push
+          fi
 
-# Check and update kernels
-LATEST_KERNEL=$(get_latest_kernel)
-CURRENT_KERNEL=$(get_current_kernel_version)
-
-if [ "$LATEST_KERNEL" != "$CURRENT_KERNEL" ] && [ -n "$LATEST_KERNEL" ]; then
-    echo "New kernel: $LATEST_KERNEL"
-    update_kernel_scripts "$LATEST_KERNEL"
-    ./zen3/latest/build.sh
-    ./zen3/lts/build.sh
-    ./zen3/rc/build.sh
-fi
+      - name: Trigger build workflow
+        if: steps.update.outputs.updated == 'true'
+        run: |
+          gh workflow run "Linux TKG P03 Build All CPUs" --ref main
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
