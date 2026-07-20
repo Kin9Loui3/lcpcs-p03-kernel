@@ -19,16 +19,17 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        cpu-type:
-          - zen3
-          - zen4
-          - zen4c
-          - generic
-          - generic-v3
-          - generic-v4
-          - intel-haswell
-          - intel-skylake
-          - intel-broadwell
+        matrix:
+          cpu-type:
+            - znver3        # Changed from zen3
+            - znver4        # Changed from zen4
+            - znver4        # Zen4c also uses znver4
+            - x86-64        # Changed from generic
+            - x86-64-v3     # Changed from generic-v3
+            - x86-64-v4     # Changed from generic-v4
+            - haswell       # Changed from intel-haswell
+            - skylake       # Changed from intel-skylake
+            - broadwell     # Changed from intel-broadwell
       fail-fast: false
 
     steps:
