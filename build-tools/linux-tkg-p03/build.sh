@@ -6,8 +6,8 @@ TKG="/linux-tkg"
 [ -d "$TKG" ] || { echo "linux-tkg not found at $TKG"; exit 1; }
 
 # Stage customization and patches
-cp /build/customization.cfg "$TKG/customization.cfg"
-for p in /build/patches/*.patch; do 
+cp /build-tools/linux-tkg-p03/customization.cfg "$TKG/customization.cfg"
+for p in /build-tools/linux-tkg-p03/patches/*.patch; do 
     [ -f "$p" ] && cp "$p" "$TKG/$(basename "${p%.patch}").mypatch"
 done
 
