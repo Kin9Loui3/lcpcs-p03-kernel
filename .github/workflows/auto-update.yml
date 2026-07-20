@@ -1,5 +1,9 @@
 name: Auto-Update Kernel
 
+permissions:
+  contents: write
+  actions: write
+
 on:
   schedule:
     - cron: '0 2 * * *'  # Daily at 2 AM UTC
@@ -32,8 +36,9 @@ jobs:
           fi
 
       - name: Trigger build workflow
-        if: steps.update.outputs.updated == 'true'
+        if: env.UPDATED == 'true'
         run: |
           gh workflow run "Linux TKG P03 Build All CPUs" --ref main
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          UPDATED: ${{ steps.update.outcome == 'success' }}
