@@ -1,5 +1,10 @@
 name: Linux TKG P03 Build All CPUs
 
+permissions:
+  contents: write
+  packages: write
+  id-token: write
+
 on:
   schedule:
     - cron: '0 2 * * *'
