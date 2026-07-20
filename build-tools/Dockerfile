@@ -30,7 +30,8 @@ COPY linux-tkg-p03/p03.config ./p03.config
 COPY linux-tkg-p03/build.sh /build-tools/build.sh
 
 # Set permissions
-RUN chmod +x /build-tools/build.sh && \
+RUN mkdir -p /output && \
+    chmod +x /build-tools/build.sh && \
     chown -R builder:builder /linux-tkg /build-tools /output
 
 # Create output directory
