@@ -38,12 +38,26 @@ RUN mkdir -p /output && chown builder:builder /output
 # Switch to builder user
 USER builder
 
-# Set environment variables
-ENV CPU_LEVEL=x86-64 \
-    _processor_opt=x86-64 \
+# Set environment variables - use ARG value
+ENV CPU_TYPE=${CPU_TYPE} \
     _compiler=llvm \
     _lto_mode=thin \
     _kernel_base=stable
 
-# Run the build
-CMD ["/build-tools/build.sh"]
+# Map CPU_TYPE to _processor_opt
+RUN case "${CPU_TYPE}" in \
+    zen3) export _processor_opt="zen3" ;; \
+    zen4) export _processor_opt="zen4" ;; \
+    zen4c) export _processor_opt="zen4c" ;; \
+    generic) export _processor_opt="x86-64" ;; \
+    generic-v3) export _processor_opt="generic-v3" ;; \
+    generic-v4) export _processor_opt="generic-v4" ;; \
+    intel-haswell) export _processor_opt="haswell" ;; \
+    intel-skylake) export _processor_opt="skylake" ;; \
+    intel-broadwell) export _processor_opt="broadwell" ;; \
+    *) export _processor_opt="x86-64" ;; \
+    esac && \
+    echo "_processor_opt=${_processor_opt}" >> /tmp/cpu_mapping.env
+
+# Run the build with CPU mapping
+CMD bash -c "source /tmp/cpu_mapping.env && /build-tools/build.sh"
