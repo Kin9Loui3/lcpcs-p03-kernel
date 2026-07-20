@@ -6,23 +6,14 @@ TKG="/linux-tkg"
 # Map CPU_TYPE to _processor_opt
 CPU_TYPE="${CPU_TYPE:-generic}"
 case "${CPU_TYPE}" in
-    zen3)
-        _processor_opt="zen3"
-        ;;
-    zen4)
-        _processor_opt="zen4"
-        ;;
-    zen4c)
-        _processor_opt="zen4c"
+    zen3|zen4|zen4c)
+        _processor_opt="${CPU_TYPE}"
         ;;
     generic)
         _processor_opt="x86-64"
         ;;
-    generic-v3)
-        _processor_opt="generic-v3"
-        ;;
-    generic-v4)
-        _processor_opt="generic-v4"
+    generic-v3|generic-v4)
+        _processor_opt="${CPU_TYPE}"
         ;;
     intel-haswell)
         _processor_opt="haswell"
@@ -34,6 +25,7 @@ case "${CPU_TYPE}" in
         _processor_opt="broadwell"
         ;;
     *)
+        echo "⚠ Unknown CPU_TYPE: ${CPU_TYPE}, falling back to x86-64"
         _processor_opt="x86-64"
         ;;
 esac
@@ -43,7 +35,9 @@ _compiler="${_compiler:-llvm}"
 _lto_mode="${_lto_mode:-thin}"
 _kernel_base="${_kernel_base:-stable}"
 
-SCHEDULERS=("eevdf" "bore" "bmq")
+# Configurable schedulers via environment variable
+SCHEDULERS_STR="${SCHEDULERS:-eevdf bore bmq}"
+IFS=' ' read -ra SCHEDULERS <<< "$SCHEDULERS_STR"
 
 echo "========================================"
 echo "Linux TKG Build Configuration"
@@ -67,6 +61,7 @@ for _cpusched in "${SCHEDULERS[@]}"; do
     cd "$TKG"
     
     # Clean previous builds
+    echo "Cleaning previous build artifacts..."
     rm -rf src/ pkg/ *.pkg.tar.* 2>/dev/null || true
     
     # Export build variables
