@@ -2,20 +2,28 @@
 set -euo pipefail
 
 TKG="/linux-tkg"
-CPU_LEVEL="${CPU_LEVEL:-x86-64}"  # default to v1 (LEGACY)
+CPU_LEVEL="${CPU_LEVEL:-x86-64}"
 _processor_opt="${_processor_opt:-$CPU_LEVEL}"
+_compiler="${_compiler:-llvm}"
+_lto_mode="${_lto_mode:-thin}"
+_kernel_base="${_kernel_base:-stable}"
 
-[ -d "$TKG" ] || { echo "linux-tkg not found at $TKG"; exit 1; }
+SCHEDULERS=("eevdf" "bore" "bmq")
 
-echo "=== Building for CPU Level: $CPU_LEVEL ==="
+for _cpusched in "${SCHEDULERS[@]}"; do
+    echo "=== Building with $_cpusched scheduler ==="
+    cd "$TKG"
+    
+    export _NUKR=true
+    export _processor_opt="$_processor_opt"
+    export _compiler="$_compiler"
+    export _lto_mode="$_lto_mode"
+    export _cpusched="$_cpusched"
+    export _llvm_ias="1"
+    export _kernel_flavour="tkg"
+    
+    makepkg -s --noconfirm --skippgpcheck CC=clang CXX=clang++ LLVM=1 LLVM_IAS=1
+    echo "=== $_cpusched build complete ==="
+done
 
-cd "$TKG"
-
-echo "=== Starting kernel build with Clang ==="
-_NUKR=true \
-    _processor_opt="$_processor_opt" \
-    makepkg -s --noconfirm --skippgpcheck \
-    CC=clang CXX=clang++ LLVM=1 LLVM_IAS=1
-
-echo "Done. Packages:"
-ls -1 "$TKG"/linux-tkg-*.pkg.tar.* 2>/dev/null || echo "(check $TKG for *.pkg.tar.zst)"
+echo "=== All schedulers built successfully ==="
