@@ -45,6 +45,8 @@ jobs:
     needs: check-version
     if: needs.check-version.outputs.should_build == 'true'
     runs-on: ubuntu-latest
+    env:
+      KERNEL_VERSION: ${{ needs.check-version.outputs.new_version }}
     steps:
       - uses: actions/checkout@v4
       
@@ -53,44 +55,41 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential libncurses-dev bison flex libssl-dev libelf-dev
       
-      - name: Download kernel
+      - name: Download and extract kernel
         run: |
-          VERSION=${{ needs.check-version.outputs.new_version }}
-          wget https://cdn.kernel.org/pub/linux/kernel/v${VERSION%%.*}.x/linux-${VERSION}.tar.xz
-          tar -xf linux-${VERSION}.tar.xz
-          cd linux-${VERSION}
+          MAJOR_VERSION=${KERNEL_VERSION%%.*}
+          wget https://cdn.kernel.org/pub/linux/kernel/v${MAJOR_VERSION}.x/linux-${KERNEL_VERSION}.tar.xz
+          tar -xf linux-${KERNEL_VERSION}.tar.xz
       
       - name: Configure kernel
         run: |
-          VERSION=${{ needs.check-version.outputs.new_version }}
-          cd linux-${VERSION}
+          cd linux-${KERNEL_VERSION}
           cp ../customization.cfg .config
           make oldconfig < /dev/null
       
       - name: Build kernel
         run: |
-          VERSION=${{ needs.check-version.outputs.new_version }}
-          cd linux-${VERSION}
+          cd linux-${KERNEL_VERSION}
           make -j$(nproc)
       
       - name: Create release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: v${{ needs.check-version.outputs.new_version }}
+          tag_name: v${{ env.KERNEL_VERSION }}
           body: |
-            Automated kernel build for Linux ${{ needs.check-version.outputs.new_version }}
+            Automated kernel build for Linux ${{ env.KERNEL_VERSION }}
             Built at: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           files: |
-            linux-${{ needs.check-version.outputs.new_version }}/arch/x86_64/boot/bzImage
-            linux-${{ needs.check-version.outputs.new_version }}/.config
+            linux-${{ env.KERNEL_VERSION }}/arch/x86_64/boot/bzImage
+            linux-${{ env.KERNEL_VERSION }}/.config
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       
       - name: Update version file
         run: |
-          echo "${{ needs.check-version.outputs.new_version }}" > .last_kernel_version
+          echo "${{ env.KERNEL_VERSION }}" > .last_kernel_version
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add .last_kernel_version
-          git commit -m "Update: kernel ${{ needs.check-version.outputs.new_version }}"
+          git commit -m "Update: kernel ${{ env.KERNEL_VERSION }}"
           git push
