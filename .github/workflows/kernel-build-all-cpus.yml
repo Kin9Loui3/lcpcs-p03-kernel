@@ -19,7 +19,7 @@ jobs:
         cpu: [generic, native, zen, zen2, zen3, zen4]
     
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
         with:
           submodules: recursive
 
@@ -95,14 +95,14 @@ jobs:
           cat /tmp/p03-${{ matrix.cpu }}.sha256
 
       - name: Upload packages
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: linux-tkg-p03-${{ matrix.cpu }}
           path: build-tools/linux-tkg/linux-tkg-p03*.pkg.tar.zst
           retention-days: 30
 
       - name: Upload checksums
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: checksums-${{ matrix.cpu }}
           path: /tmp/p03-${{ matrix.cpu }}.sha256
@@ -112,7 +112,7 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-      - uses: actions/download-artifact@v3
+      - uses: actions/download-artifact@v4
 
       - name: Verify all builds
         run: |
@@ -136,7 +136,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/')
     
     steps:
-      - uses: actions/download-artifact@v3
+      - uses: actions/download-artifact@v4
 
       - name: Organize release
         run: |
