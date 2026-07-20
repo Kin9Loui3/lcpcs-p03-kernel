@@ -4,6 +4,9 @@ on:
   push:
     paths:
       - 'build-tools/linux-tkg-p03/**'
+      - 'build-tools/auto-update.sh'  # Add this
+  schedule:
+    - cron: '0 2 * * *'  # Daily at 2 AM UTC
   workflow_dispatch:
     inputs:
       cpu_types:
@@ -12,7 +15,33 @@ on:
         default: 'generic native zen zen2 zen3 zen4'
 
 jobs:
+  check-kernel-update:
+    runs-on: ubuntu-latest
+    outputs:
+      needs_update: ${{ steps.check.outputs.needs_update }}
+      new_version: ${{ steps.check.outputs.new_version }}
+    
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Check for kernel updates
+        id: check
+        run: |
+          LATEST=$(curl -s https://www.kernel.org/releases.json | jq -r '.releases[0].version')
+          CURRENT=$(grep 'KERNEL_VERSION=' build-tools/linux-tkg-p03/build.sh | head -1 | cut -d'"' -f2)
+          
+          echo "Latest: $LATEST"
+          echo "Current: $CURRENT"
+          
+          if [ "$LATEST" != "$CURRENT" ]; then
+            echo "needs_update=true" >> $GITHUB_OUTPUT
+            echo "new_version=$LATEST" >> $GITHUB_OUTPUT
+          else
+            echo "needs_update=false" >> $GITHUB_OUTPUT
+          fi
+
   build:
+    needs: check-kernel-update
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -29,7 +58,14 @@ jobs:
           sudo apt-get install -y \
             build-essential libncurses-dev flex bison libssl-dev \
             libelf-dev bc pahole git wget cpio kmod \
-            clang llvm lld llvm-tools
+            clang llvm lld llvm-tools jq
+
+      - name: Update kernel version (if needed)
+        if: needs.check-kernel-update.outputs.needs_update == 'true'
+        run: |
+          NEW_VERSION="${{ needs.check-kernel-update.outputs.new_version }}"
+          echo "Updating to kernel $NEW_VERSION"
+          sed -i "s/KERNEL_VERSION=\"[0-9.]*\"/KERNEL_VERSION=\"$NEW_VERSION\"/" build-tools/linux-tkg-p03/build.sh
 
       - name: Clone/update linux-tkg
         run: |
@@ -43,7 +79,6 @@ jobs:
       - name: Configure for ${{ matrix.cpu }}
         run: |
           cd build-tools/linux-tkg-p03
-          # Update CPU scheduling in customization.cfg
           sed -i 's/^_cpusched=.*/_cpusched=${{ matrix.cpu }}/g' customization.cfg
           echo "=== CPU Config for ${{ matrix.cpu }} ==="
           grep _cpusched customization.cfg
@@ -53,10 +88,8 @@ jobs:
           cd build-tools/linux-tkg-p03
           TKG="../linux-tkg"
           
-          # Copy customization
           cp customization.cfg "$TKG/customization.cfg"
           
-          # Stage patches as .mypatch (linux-tkg auto-applies them)
           mkdir -p "$TKG/mypatches"
           for p in patches/*.patch; do
             [ -f "$p" ] && cp "$p" "$TKG/$(basename "${p%.patch}").mypatch"
@@ -196,3 +229,4 @@ jobs:
             - **Timer:** 750Hz
             - **Build Date:** ${{ github.event.head_commit.timestamp }}
             - **Commit:** ${{ github.sha }}
+            - **Auto-Updated:** ${{ needs.check-kernel-update.outputs.needs_update == 'true' && 'Yes' || 'No' }}
