@@ -1,0 +1,198 @@
+name: Linux TKG P03 Build All CPUs
+
+on:
+  push:
+    paths:
+      - 'build-tools/linux-tkg-p03/**'
+  workflow_dispatch:
+    inputs:
+      cpu_types:
+        description: 'CPU types to build'
+        required: false
+        default: 'generic native zen zen2 zen3 zen4'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        cpu: [generic, native, zen, zen2, zen3, zen4]
+    
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential libncurses-dev flex bison libssl-dev \
+            libelf-dev bc pahole git wget cpio kmod \
+            clang llvm lld llvm-tools
+
+      - name: Clone/update linux-tkg
+        run: |
+          cd build-tools
+          if [ ! -d linux-tkg ]; then
+            git clone https://github.com/Frogging-Family/linux-tkg.git
+          else
+            cd linux-tkg && git pull origin master && cd ..
+          fi
+
+      - name: Configure for ${{ matrix.cpu }}
+        run: |
+          cd build-tools/linux-tkg-p03
+          # Update CPU scheduling in customization.cfg
+          sed -i 's/^_cpusched=.*/_cpusched=${{ matrix.cpu }}/g' customization.cfg
+          echo "=== CPU Config for ${{ matrix.cpu }} ==="
+          grep _cpusched customization.cfg
+
+      - name: Stage p03 customization & patches
+        run: |
+          cd build-tools/linux-tkg-p03
+          TKG="../linux-tkg"
+          
+          # Copy customization
+          cp customization.cfg "$TKG/customization.cfg"
+          
+          # Stage patches as .mypatch (linux-tkg auto-applies them)
+          mkdir -p "$TKG/mypatches"
+          for p in patches/*.patch; do
+            [ -f "$p" ] && cp "$p" "$TKG/$(basename "${p%.patch}").mypatch"
+          done
+          
+          echo "✓ Staged $(ls "$TKG"/*.mypatch 2>/dev/null | wc -l) patches"
+          echo "✓ Config ready"
+
+      - name: Build TKG P03 for ${{ matrix.cpu }}
+        run: |
+          cd build-tools/linux-tkg
+          export _NUKR=true
+          export CC=clang
+          export CXX=clang++
+          export LLVM=1
+          export LLVM_IAS=1
+          
+          echo "Building with Clang/LLVM + ThinLTO..."
+          makepkg -s --noconfirm --skippgpcheck 2>&1 | tail -50
+
+      - name: Verify output packages
+        run: |
+          cd build-tools/linux-tkg
+          if ls linux-tkg-p03*.pkg.tar.zst 1> /dev/null 2>&1; then
+            echo "✓ Build successful"
+            ls -lh linux-tkg-p03*.pkg.tar.zst
+          else
+            echo "✗ No packages found!"
+            exit 1
+          fi
+
+      - name: Generate checksums
+        run: |
+          cd build-tools/linux-tkg
+          sha256sum linux-tkg-p03*.pkg.tar.zst > /tmp/p03-${{ matrix.cpu }}.sha256
+          cat /tmp/p03-${{ matrix.cpu }}.sha256
+
+      - name: Upload packages
+        uses: actions/upload-artifact@v3
+        with:
+          name: linux-tkg-p03-${{ matrix.cpu }}
+          path: build-tools/linux-tkg/linux-tkg-p03*.pkg.tar.zst
+          retention-days: 30
+
+      - name: Upload checksums
+        uses: actions/upload-artifact@v3
+        with:
+          name: checksums-${{ matrix.cpu }}
+          path: /tmp/p03-${{ matrix.cpu }}.sha256
+
+  verify:
+    needs: build
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/download-artifact@v3
+
+      - name: Verify all builds
+        run: |
+          echo "=== All Build Artifacts ==="
+          find . -name "*.pkg.tar.zst" | sort
+          echo ""
+          echo "=== Checksums ==="
+          find . -name "*.sha256" -exec cat {} \;
+          
+          PKG_COUNT=$(find . -name "*.pkg.tar.zst" | wc -l)
+          if [ "$PKG_COUNT" -eq 6 ]; then
+            echo "✓ All 6 CPU variants built successfully"
+          else
+            echo "✗ Expected 6 packages, found $PKG_COUNT"
+            exit 1
+          fi
+
+  release:
+    needs: [build, verify]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    
+    steps:
+      - uses: actions/download-artifact@v3
+
+      - name: Organize release
+        run: |
+          mkdir -p release
+          find . -name "*.pkg.tar.zst" -exec cp {} release/ \;
+          find . -name "*.sha256" -exec cp {} release/ \;
+          
+          echo "=== Release Contents ==="
+          ls -lh release/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: release/*
+          draft: false
+          prerelease: false
+          body: |
+            # Linux TKG P03 Multi-CPU Build
+
+            Built with **Clang/LLVM + ThinLTO** matching upstream p03 recipe.
+
+            ## Packages Included
+
+            - `linux-tkg-p03` - Kernel package
+            - `linux-tkg-p03-headers` - Development headers
+
+            **CPU Variants:**
+            - generic
+            - native
+            - zen
+            - zen2
+            - zen3
+            - zen4
+
+            ## Installation
+
+            ```bash
+            # Download latest release
+            wget https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/linux-tkg-p03-*.pkg.tar.zst
+
+            # Install
+            sudo pacman -U linux-tkg-p03-*.pkg.tar.zst
+            ```
+
+            ## Verification
+
+            ```bash
+            # Verify checksums
+            sha256sum -c *.sha256
+            ```
+
+            ## Build Info
+
+            - **Kernel:** TKG with p03 customizations
+            - **Compiler:** Clang/LLVM with ThinLTO
+            - **Patches:** BORE, ADIOS, POC, LRU-Marie, nap, graysky ISA
+            - **Timer:** 750Hz
+            - **Build Date:** ${{ github.event.head_commit.timestamp }}
+            - **Commit:** ${{ github.sha }}
