@@ -11,17 +11,17 @@ RUN pacman -Syu --noconfirm && \
     git \
     ccache
 
-WORKDIR /build
+WORKDIR /linux-tkg
 
 # Clone linux-tkg
-RUN git clone https://github.com/Frogging-Family/linux-tkg.git /linux-tkg
+RUN git clone https://github.com/Frogging-Family/linux-tkg.git .
 
 # Copy your customization and patches
-COPY build-tools/customization.cfg /build/customization.cfg
-COPY build-tools/patches/ /build/patches/
-COPY build-tools/build.sh /build/build.sh
+COPY build-tools/customization.cfg ./customization.cfg
+COPY build-tools/patches/ ./patches/
+COPY build-tools/build.sh /build-tools/build.sh
 
-RUN chmod +x /build/build.sh
+RUN chmod +x /build-tools/build.sh
 
 # Run the build
-RUN /build/build.sh
+RUN /build-tools/build.sh
