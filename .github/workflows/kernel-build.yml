@@ -1,0 +1,92 @@
+name: Kernel Build
+
+on:
+  schedule:
+    - cron: '0 2 * * *'  # 2 AM UTC daily
+  workflow_dispatch:
+
+jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    outputs:
+      new_version: ${{ steps.check.outputs.version }}
+      should_build: ${{ steps.check.outputs.should_build }}
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Check for new kernel version
+        id: check
+        run: |
+          LATEST=$(curl -s https://www.kernel.org/releases.json | jq -r '.latest_stable.version')
+          echo "Latest kernel: $LATEST"
+          
+          if [ -f .last_kernel_version ]; then
+            BUILT=$(cat .last_kernel_version)
+            echo "Last built: $BUILT"
+          else
+            BUILT="none"
+            echo "No previous build found"
+          fi
+          
+          if [ "$LATEST" != "$BUILT" ]; then
+            echo "version=$LATEST" >> $GITHUB_OUTPUT
+            echo "should_build=true" >> $GITHUB_OUTPUT
+            echo "New version detected: $LATEST"
+          else
+            echo "should_build=false" >> $GITHUB_OUTPUT
+            echo "Already up to date"
+          fi
+
+  build:
+    needs: check-version
+    if: needs.check-version.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up build environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libncurses-dev bison flex libssl-dev libelf-dev
+      
+      - name: Download kernel
+        run: |
+          VERSION=${{ needs.check-version.outputs.new_version }}
+          wget https://cdn.kernel.org/pub/linux/kernel/v${VERSION%%.*}.x/linux-${VERSION}.tar.xz
+          tar -xf linux-${VERSION}.tar.xz
+          cd linux-${VERSION}
+      
+      - name: Configure kernel
+        run: |
+          VERSION=${{ needs.check-version.outputs.new_version }}
+          cd linux-${VERSION}
+          cp ../customization.cfg .config
+          make oldconfig < /dev/null
+      
+      - name: Build kernel
+        run: |
+          VERSION=${{ needs.check-version.outputs.new_version }}
+          cd linux-${VERSION}
+          make -j$(nproc)
+      
+      - name: Create release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ needs.check-version.outputs.new_version }}
+          body: |
+            Automated kernel build for Linux ${{ needs.check-version.outputs.new_version }}
+            Built at: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          files: |
+            linux-${{ needs.check-version.outputs.new_version }}/arch/x86_64/boot/bzImage
+            linux-${{ needs.check-version.outputs.new_version }}/.config
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Update version file
+        run: |
+          echo "${{ needs.check-version.outputs.new_version }}" > .last_kernel_version
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .last_kernel_version
+          git commit -m "Update: kernel ${{ needs.check-version.outputs.new_version }}"
+          git push
