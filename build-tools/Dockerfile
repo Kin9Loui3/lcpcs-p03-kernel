@@ -21,8 +21,8 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /build
 
-# Copy the entire build-tools directory
-COPY . /build/
+# Copy only the build-tools directory
+COPY build-tools/ /build/
 
 # Make build script executable
 RUN chmod +x /build/build.sh
