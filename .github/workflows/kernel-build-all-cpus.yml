@@ -23,28 +23,29 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Install build dependencies
+      - name: Setup Arch build environment
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            base-devel \
             git \
-            clang \
-            lld \
-            llvm \
-            llvm-dev \
-            clang-tools \
-            cmake \
-            ninja-build \
-            pahole \
-            libelf-dev \
+            wget \
+            curl \
+            build-essential \
             libssl-dev \
+            libelf-dev \
             bc \
-            kmod \
-            cpio \
             flex \
-            bison \
-            dwarves
+            bison
+          
+          # Install pacman (Arch package manager)
+          sudo apt-get install -y pacman
+          
+          # Initialize pacman
+          sudo pacman-key --init
+          sudo pacman-key --populate archlinux
+          
+          # Install base-devel via pacman
+          sudo pacman -Sy --noconfirm base-devel
 
       - name: Clone/update linux-tkg
         run: |
