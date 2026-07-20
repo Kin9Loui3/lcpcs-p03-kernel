@@ -15,21 +15,52 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    outputs:
+      new_version: ${{ steps.check.outputs.version }}
+      should_build: ${{ steps.check.outputs.should_build }}
+    steps:
+      - uses: actions/checkout@v4.2.0
+      
+      - name: Check for new kernel version
+        id: check
+        run: |
+          LATEST=$(curl -s https://www.kernel.org/releases.json | jq -r '.latest_stable.version')
+          echo "Latest kernel: $LATEST"
+          
+          if [ -f .last_kernel_version ]; then
+            BUILT=$(cat .last_kernel_version)
+            echo "Last built: $BUILT"
+          else
+            BUILT="none"
+            echo "No previous build found"
+          fi
+          
+          if [ "$LATEST" != "$BUILT" ]; then
+            echo "version=$LATEST" >> $GITHUB_OUTPUT
+            echo "should_build=true" >> $GITHUB_OUTPUT
+            echo "New version detected: $LATEST"
+          else
+            echo "should_build=false" >> $GITHUB_OUTPUT
+            echo "Already up to date"
+          fi
+
   build-matrix:
+    needs: check-version
+    if: needs.check-version.outputs.should_build == 'true'
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        matrix:
-          cpu-type:
-            - znver3        # Changed from zen3
-            - znver4        # Changed from zen4
-            - znver4        # Zen4c also uses znver4
-            - x86-64        # Changed from generic
-            - x86-64-v3     # Changed from generic-v3
-            - x86-64-v4     # Changed from generic-v4
-            - haswell       # Changed from intel-haswell
-            - skylake       # Changed from intel-skylake
-            - broadwell     # Changed from intel-broadwell
+        cpu-type:
+          - znver3
+          - znver4
+          - x86-64
+          - x86-64-v3
+          - x86-64-v4
+          - haswell
+          - skylake
+          - broadwell
       fail-fast: false
 
     steps:
@@ -63,6 +94,7 @@ jobs:
           file: ./build-tools/Dockerfile
           build-args: |
             CPU_TYPE=${{ matrix.cpu-type }}
+            KERNEL_VERSION=${{ needs.check-version.outputs.new_version }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -82,6 +114,7 @@ jobs:
           echo "CPU_TYPE=${{ matrix.cpu-type }}" >> build-${{ matrix.cpu-type }}.info
           echo "BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> build-${{ matrix.cpu-type }}.info
           echo "GIT_SHA=${{ github.sha }}" >> build-${{ matrix.cpu-type }}.info
+          echo "KERNEL_VERSION=${{ needs.check-version.outputs.new_version }}" >> build-${{ matrix.cpu-type }}.info
           echo "PACKAGES=$(ls -1 output-${{ matrix.cpu-type }}/*.pkg.tar.* 2>/dev/null | wc -l)" >> build-${{ matrix.cpu-type }}.info
 
       - name: Upload kernel packages
@@ -100,9 +133,9 @@ jobs:
           retention-days: 30
 
   create-release:
-    needs: build-matrix
+    needs: [check-version, build-matrix]
+    if: needs.check-version.outputs.should_build == 'true'
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
 
     steps:
       - uses: actions/checkout@v4.2.0
@@ -115,23 +148,45 @@ jobs:
       - name: List downloaded artifacts
         run: find artifacts/ -type f
 
-      - name: Create Release with build info
+      - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
+          tag_name: v${{ needs.check-version.outputs.new_version }}
           draft: false
           prerelease: false
           files: artifacts/**/*
           body: |
-            # Linux TKG P03 - Multi-CPU Build Release
+            # Linux TKG P03 v${{ needs.check-version.outputs.new_version }}
             
             This release contains optimized kernels for the following CPU architectures:
-            - AMD Zen3, Zen4, Zen4C
+            - AMD Zen3, Zen4
             - Generic (x86-64, v3, v4)
             - Intel Haswell, Skylake, Broadwell
             
             Each variant is built with architecture-specific optimizations for maximum performance.
             
             Build Info:
+            - Kernel Version: ${{ needs.check-version.outputs.new_version }}
             - Build Date: ${{ github.event.head_commit.timestamp }}
             - Git SHA: ${{ github.sha }}
             - Trigger: ${{ github.event_name }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  update-version:
+    needs: [check-version, build-matrix]
+    if: needs.check-version.outputs.should_build == 'true' && !failure()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4.2.0
+      
+      - name: Update version file
+        run: |
+          echo "${{ needs.check-version.outputs.new_version }}" > .last_kernel_version
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .last_kernel_version
+          git commit -m "Update: kernel ${{ needs.check-version.outputs.new_version }}"
+          git push
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
