@@ -37,7 +37,8 @@ jobs:
           dwarves \
           pahole \
           kmod \
-          rsync
+          rsync \
+          git
     
     - name: Get kernel version from config
       id: kernel_version
@@ -120,6 +121,20 @@ jobs:
             ;;
         esac
         
+        # Enable TKG optimizations
+        scripts/config --enable CONFIG_HZ_1000
+        scripts/config --set-val CONFIG_HZ 1000
+        scripts/config --enable CONFIG_SCHED_ALT
+        scripts/config --enable CONFIG_BORE_SCHEDULER
+        scripts/config --enable CONFIG_TCP_CONG_BBR
+        scripts/config --enable CONFIG_NET_SCH_FQ
+        scripts/config --enable CONFIG_NET_SCH_FQ_CODEL
+        scripts/config --enable CONFIG_NET_SCH_CAKE
+        scripts/config --enable CONFIG_NETFILTER_XT_MATCH_BPF
+        scripts/config --enable CONFIG_BPFILTER
+        scripts/config --enable CONFIG_BPF_SYSCALL
+        scripts/config --enable CONFIG_CGROUP_BPF
+        
         # Finalize configuration
         make olddefconfig
         
@@ -198,10 +213,14 @@ jobs:
           ### Features:
           - Custom patches from build-tools/linux-tkg-p03
           - CPU-specific optimizations
-          - Custom configuration
+          - 1000Hz timer
+          - BORE scheduler
+          - BBR congestion control
+          - BPF support
           
           ### Build Info:
           - Build Number: ${{ github.run_number }}
+          - Kernel Version: ${{ needs.build.outputs.kernel_version }}
           - Commit: ${{ github.sha }}
         files: artifacts/**/*
       env:
