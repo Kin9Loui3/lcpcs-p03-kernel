@@ -151,6 +151,10 @@ jobs:
               echo "No patch directory found at $PATCH_DIR"
           fi
           
+      - name: Configure for CPU optimization
+        run: |
+          cd linux-tkg
+      
           CPU_OPT="${{ matrix.cpu }}"
           echo "Configuring for: $CPU_OPT"
       
@@ -185,7 +189,7 @@ jobs:
               ;;
           esac
       
-          # Set kernel local version for tkg naming
+          # Set kernel local version for LCPCS naming
           ./scripts/config --set-str CONFIG_LOCALVERSION "-linux-lcpcs-p03"
           
           # Optimize for build speed
@@ -206,7 +210,7 @@ jobs:
           echo "=== Kernel Configuration Summary ==="
           echo "CPU optimization: $CPU_OPT"
           grep -E "CONFIG_M_|CONFIG_GENERIC_CPU|CONFIG_LOCALVERSION|CONFIG_DEBUG_INFO|CONFIG_KERNEL_ZSTD" .config | grep -v "^#"
-    
+          
       - name: Build kernel
         run: |
           cd linux-tkg
