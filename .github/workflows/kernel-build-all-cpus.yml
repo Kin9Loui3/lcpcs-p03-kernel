@@ -146,104 +146,105 @@ jobs:
             install -Dm644 .config "$pkgdir/boot/config-${_kernver}"
             
             # Remove unnecessary files
-        rm -rf "$pkgdir/usr/lib/modules/${_kernver}/build"
-        rm -rf "$pkgdir/usr/lib/modules/${_kernver}/source"
+            rm -rf "$pkgdir/usr/lib/modules/${_kernver}/build"
+            rm -rf "$pkgdir/usr/lib/modules/${_kernver}/source"
         
-        # Install mkinitcpio preset
-        mkdir -p "$pkgdir/etc/mkinitcpio.d"
-        cat > "$pkgdir/etc/mkinitcpio.d/${pkgbase}.preset" << EOF
-      # mkinitcpio preset file for the '${pkgbase}' package
-      
-      ALL_config="/etc/mkinitcpio.conf"
-      ALL_kver="/boot/vmlinuz-${_kernver}"
-      ALL_microcode=(/boot/*-ucode.img)
-      
-      PRESETS=('default' 'fallback')
-      
-      default_image="/boot/initramfs-${_kernver}.img"
-      default_options="-v"
-      
-      fallback_image="/boot/initramfs-${_kernver}-fallback.img"
-      fallback_options="-S autodetect"
-      EOF
-      }
-      
-      package_linux-lcpcs-p03-headers() {
-        pkgdesc="Headers and scripts for building modules for the ${pkgbase} kernel"
-        depends=(pahole)
-        
-        cd linux-${pkgver}
-        
-        mkdir -p "$pkgdir/usr/lib/modules/${_kernver}"
-        
-        # Install headers
-        cp -t "$pkgdir/usr/lib/modules/${_kernver}/build" -a include scripts
-        
-        # Install Makefile and Kconfig
-        install -Dm644 Makefile "$pkgdir/usr/lib/modules/${_kernver}/build/Makefile"
-        install -Dm644 kernel/Makefile "$pkgdir/usr/lib/modules/${_kernver}/build/kernel/Makefile"
-        install -Dm644 .config "$pkgdir/usr/lib/modules/${_kernver}/build/.config"
-        
-        # Copy arch files
-        mkdir -p "$pkgdir/usr/lib/modules/${_kernver}/build/arch/x86"
-        cp -t "$pkgdir/usr/lib/modules/${_kernver}/build/arch/x86" -a arch/x86/include arch/x86/Makefile*
-        
-        # Install tools
-        mkdir -p "$pkgdir/usr/lib/modules/${_kernver}/build/tools/objtool"
-        cp -t "$pkgdir/usr/lib/modules/${_kernver}/build/tools/objtool" -a tools/objtool/objtool
-        
-        # Remove unnecessary files
-        find "$pkgdir/usr/lib/modules/${_kernver}/build" -name "*.o" -delete
-        find "$pkgdir/usr/lib/modules/${_kernver}/build" -name "*.a" -delete
-        
-        # Create symlink
-        mkdir -p "$pkgdir/usr/lib/modules/${_kernver}"
-        ln -sr "$pkgdir/usr/lib/modules/${_kernver}/build" "$pkgdir/usr/lib/modules/${_kernver}/source"
-      }
-      PKGBUILD_EOF
+            # Install mkinitcpio preset
+            mkdir -p "$pkgdir/etc/mkinitcpio.d"
+            cat > "$pkgdir/etc/mkinitcpio.d/${pkgbase}.preset" << EOF
+            
+# mkinitcpio preset file for the '${pkgbase}' package
 
-  - name: Generate default config
-    run: |
-      cd /tmp/kernel-build/linux-${KERNEL_VERSION}
-      make defconfig
-      cp .config /tmp/kernel-build/pkgbuild/config
+ALL_config="/etc/mkinitcpio.conf"
+ALL_kver="/boot/vmlinuz-${_kernver}"
+ALL_microcode=(/boot/*-ucode.img)
 
-  - name: Build kernel package
-    run: |
-      cd /tmp/kernel-build/pkgbuild
-      
-      # Replace placeholders
-      sed -i "s/KERNEL_VERSION_PLACEHOLDER/${KERNEL_VERSION}/g" PKGBUILD
-      sed -i "s/CPU_PLACEHOLDER/${{ matrix.cpu }}/g" PKGBUILD
-      
-      # Build as non-root (optional, for security)
-      # sudo -u builder makepkg -s --noconfirm
-      
-      # Or build as root (faster)
-      makepkg -s --noconfirm
+PRESETS=('default' 'fallback')
 
-  - name: Upload artifacts
-    uses: actions/upload-artifact@v3
-    with:
-      name: kernel-${{ matrix.cpu }}
-      path: /tmp/kernel-build/pkgbuild/*.pkg.tar.zst
-      retention-days: 30
+default_image="/boot/initramfs-${_kernver}.img"
+default_options="-v"
 
-  - name: Create Release
-    if: startsWith(github.ref, 'refs/tags/')
-    uses: softprops/action-gh-release@v1
-    with:
-      files: /tmp/kernel-build/pkgbuild/*.pkg.tar.zst
-      draft: false
-      prerelease: false
-    env:
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+fallback_image="/boot/initramfs-${_kernver}-fallback.img"
+fallback_options="-S autodetect"
+EOF
+          }
+          
+          package_linux-lcpcs-p03-headers() {
+            pkgdesc="Headers and scripts for building modules for the ${pkgbase} kernel"
+            depends=(pahole)
+            
+            cd linux-${pkgver}
+            
+            mkdir -p "$pkgdir/usr/lib/modules/${_kernver}"
+            
+            # Install headers
+            cp -t "$pkgdir/usr/lib/modules/${_kernver}/build" -a include scripts
+            
+            # Install Makefile and Kconfig
+            install -Dm644 Makefile "$pkgdir/usr/lib/modules/${_kernver}/build/Makefile"
+            install -Dm644 kernel/Makefile "$pkgdir/usr/lib/modules/${_kernver}/build/kernel/Makefile"
+            install -Dm644 .config "$pkgdir/usr/lib/modules/${_kernver}/build/.config"
+            
+            # Copy arch files
+            mkdir -p "$pkgdir/usr/lib/modules/${_kernver}/build/arch/x86"
+            cp -t "$pkgdir/usr/lib/modules/${_kernver}/build/arch/x86" -a arch/x86/include arch/x86/Makefile*
+            
+            # Install tools
+            mkdir -p "$pkgdir/usr/lib/modules/${_kernver}/build/tools/objtool"
+            cp -t "$pkgdir/usr/lib/modules/${_kernver}/build/tools/objtool" -a tools/objtool/objtool
+            
+            # Remove unnecessary files
+            find "$pkgdir/usr/lib/modules/${_kernver}/build" -name "*.o" -delete
+            find "$pkgdir/usr/lib/modules/${_kernver}/build" -name "*.a" -delete
+            
+            # Create symlink
+            mkdir -p "$pkgdir/usr/lib/modules/${_kernver}"
+            ln -sr "$pkgdir/usr/lib/modules/${_kernver}/build" "$pkgdir/usr/lib/modules/${_kernver}/source"
+          }
+          PKGBUILD_EOF
 
-  - name: Generate checksums
-    run: |
-      cd /tmp/kernel-build/pkgbuild
-      sha256sum *.pkg.tar.zst > SHA256SUMS
-      echo "## SHA256 Checksums" >> $GITHUB_STEP_SUMMARY
-      echo '```' >> $GITHUB_STEP_SUMMARY
-      cat SHA256SUMS >> $GITHUB_STEP_SUMMARY
-      echo '```' >> $GITHUB_STEP_SUMMARY
+      - name: Generate default config
+        run: |
+          cd /tmp/kernel-build/linux-${KERNEL_VERSION}
+          make defconfig
+          cp .config /tmp/kernel-build/pkgbuild/config
+
+      - name: Build kernel package
+        run: |
+          cd /tmp/kernel-build/pkgbuild
+          
+          # Replace placeholders
+          sed -i "s/KERNEL_VERSION_PLACEHOLDER/${KERNEL_VERSION}/g" PKGBUILD
+          sed -i "s/CPU_PLACEHOLDER/${{ matrix.cpu }}/g" PKGBUILD
+          
+          # Build as non-root (optional, for security)
+          # sudo -u builder makepkg -s --noconfirm
+          
+          # Or build as root (faster)
+          makepkg -s --noconfirm
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: kernel-${{ matrix.cpu }}
+          path: /tmp/kernel-build/pkgbuild/*.pkg.tar.zst
+          retention-days: 30
+
+      - name: Create Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: /tmp/kernel-build/pkgbuild/*.pkg.tar.zst
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate checksums
+        run: |
+          cd /tmp/kernel-build/pkgbuild
+          sha256sum *.pkg.tar.zst > SHA256SUMS
+          echo "## SHA256 Checksums" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat SHA256SUMS >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
