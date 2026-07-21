@@ -1,204 +1,116 @@
 name: Linux TKG P03 Build All CPUs
 
-permissions:
-  contents: write
-  packages: write
-  id-token: write
-
 on:
-  schedule:
-    - cron: '0 2 * * *'
   workflow_dispatch:
+  schedule:
+    - cron: '0 0 * * 1'  # Weekly on Monday
 
 env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
-  IMAGE_NAME_LOWER: ${{ lower(github.repository) }}
+  KERNEL_VERSION: "6.13.5"
+  BUILDER_REPO: "sirlucjan/kernel-patches"
+  BUILDER_REF: "master"
+  KERNEL_REPO: "sirlucjan/linux-tkg"
+  KERNEL_REF: "master"
+  # GitHub Actions doesn't have lower() - using toLower() instead
+  REPO_OWNER_LOWER: ${{ toLower(github.repository_owner) }}
 
 jobs:
-  check-version:
-    runs-on: ubuntu-latest
-    outputs:
-      new_version: ${{ steps.check.outputs.version }}
-      should_build: ${{ steps.check.outputs.should_build }}
-    steps:
-      - uses: actions/checkout@v4.2.0
-      
-      - name: Check for new kernel version
-        id: check
-        run: |
-          LATEST=$(curl -s https://www.kernel.org/releases.json | jq -r '.latest_stable.version')
-          echo "Latest kernel: $LATEST"
-          
-          if [ -f .last_kernel_version ]; then
-            BUILT=$(cat .last_kernel_version)
-            echo "Last built: $BUILT"
-          else
-            BUILT="none"
-            echo "No previous build found"
-          fi
-          
-          if [ "$LATEST" != "$BUILT" ]; then
-            echo "version=$LATEST" >> $GITHUB_OUTPUT
-            echo "should_build=true" >> $GITHUB_OUTPUT
-            echo "New version detected: $LATEST"
-          else
-            echo "should_build=false" >> $GITHUB_OUTPUT
-            echo "Already up to date"
-          fi
-
-  build-matrix:
-    needs: check-version
-    if: needs.check-version.outputs.should_build == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 180
+  build:
     strategy:
       matrix:
-        cpu-type:
-          - znver3
-          - znver4
-          - x86-64
-          - x86-64-v3
-          - x86-64-v4
-          - haswell
-          - skylake
-          - broadwell
+        cpu: [znver3, znver4, x86-64, x86-64-v3, x86-64-v4, haswell, skylake, broadwell]
       max-parallel: 4
       fail-fast: false
 
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
     steps:
-      - uses: actions/checkout@v4.2.0
+    - name: Checkout builder repo
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ env.BUILDER_REPO }}
+        ref: ${{ env.BUILDER_REF }}
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-        with:
-          driver-opts: |
-            image=moby/buildkit:latest
-            network=host
+    - name: Download kernel source
+      run: |
+        cd linux-tkg
+        ./download_kernel_source.sh ${{ env.KERNEL_VERSION }}
 
-      - name: Log in to Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.KERNEL_TOKEN }}
+    - name: Configure build
+      run: |
+        cd linux-tkg
+        echo "_diff_cpuspecs=" > customization.cfg
+        echo "_cpusched=" > customization.cfg
+        echo "_compiler="gcc"" > customization.cfg
+        echo "_processor_opt=${{ matrix.cpu }}" >> customization.cfg
+        echo "_config_processor_override=1" >> customization.cfg
+        echo "_localmodcfg=" >> customization.cfg
+        echo "_menucfg=" >> customization.cfg
+        echo "_numadisable=2" >> customization.cfg
 
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_LOWER }}
-          tags: |
-            type=ref,event=branch
-            type=semver,pattern={{version}}
-            type=sha
-            ${{ matrix.cpu-type }}-latest
+    - name: Build kernel
+      run: |
+        cd linux-tkg
+        ./install.sh install
 
-      - name: Build and push ${{ matrix.cpu-type }}
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./build-tools/Dockerfile
-          build-args: |
-            CPU_TYPE=${{ matrix.cpu-type }}
-            KERNEL_VERSION=${{ needs.check-version.outputs.new_version }}
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: |
-            type=gha
-            type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME_LOWER }}:cache-${{ matrix.cpu-type }}
-          cache-to: |
-            type=gha,mode=max
-            type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME_LOWER }}:cache-${{ matrix.cpu-type }},mode=max
-
-      - name: Extract kernel packages from container
-        run: |
-          mkdir -p output-${{ matrix.cpu-type }}
-          docker run --rm \
-            -v $(pwd)/output-${{ matrix.cpu-type }}:/output \
-            --entrypoint /bin/bash \
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_LOWER }}:${{ matrix.cpu-type }}-latest \
-            -c "cp /linux-tkg/*.pkg.tar.* /output/ 2>/dev/null; ls -la /output/"
-
-      - name: Generate build info
-        run: |
-          echo "CPU_TYPE=${{ matrix.cpu-type }}" >> build-${{ matrix.cpu-type }}.info
-          echo "BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> build-${{ matrix.cpu-type }}.info
-          echo "GIT_SHA=${{ github.sha }}" >> build-${{ matrix.cpu-type }}.info
-          echo "KERNEL_VERSION=${{ needs.check-version.outputs.new_version }}" >> build-${{ matrix.cpu-type }}.info
-          echo "PACKAGES=$(ls -1 output-${{ matrix.cpu-type }}/*.pkg.tar.* 2>/dev/null | wc -l)" >> build-${{ matrix.cpu-type }}.info
-
-      - name: Upload kernel packages
-        uses: actions/upload-artifact@v4
-        with:
-          name: kernel-${{ matrix.cpu-type }}
-          path: output-${{ matrix.cpu-type }}/*.pkg.tar.*
-          retention-days: 30
-          if-no-files-found: warn
-
-      - name: Upload build info artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-info-${{ matrix.cpu-type }}
-          path: build-${{ matrix.cpu-type }}.info
-          retention-days: 30
+    - name: Upload kernel packages
+      uses: actions/upload-artifact@v4
+      with:
+        name: kernel-packages-${{ matrix.cpu }}
+        path: linux-tkg/*.pkg.tar.zst
+        retention-days: 7
 
   create-release:
-    needs: [check-version, build-matrix]
-    if: needs.check-version.outputs.should_build == 'true'
+    needs: build
     runs-on: ubuntu-latest
-
+    if: github.ref == 'refs/heads/main'
+    
     steps:
-      - uses: actions/checkout@v4.2.0
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: artifacts
 
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts/
-
-      - name: List downloaded artifacts
-        run: find artifacts/ -type f
-
-      - name: Create Release
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: v${{ needs.check-version.outputs.new_version }}
-          draft: false
-          prerelease: false
-          files: artifacts/**/*
-          body: |
-            # Linux TKG P03 v${{ needs.check-version.outputs.new_version }}
-            
-            This release contains optimized kernels for the following CPU architectures:
-            - AMD Zen3, Zen4
-            - Generic (x86-64, v3, v4)
-            - Intel Haswell, Skylake, Broadwell
-            
-            Each variant is built with architecture-specific optimizations for maximum performance.
-            
-            Build Info:
-            - Kernel Version: ${{ needs.check-version.outputs.new_version }}
-            - Build Date: ${{ github.event.head_commit.timestamp }}
-            - Git SHA: ${{ github.sha }}
-            - Trigger: ${{ github.event_name }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: v${{ env.KERNEL_VERSION }}-${{ github.run_number }}
+        name: "Linux TKG ${{ env.KERNEL_VERSION }} Kernel Build ${{ github.run_number }}"
+        body: |
+          ## Linux TKG Kernel ${{ env.KERNEL_VERSION }}
+          Auto-built from ${{ env.BUILDER_REPO }}@${{ env.BUILDER_REF }}
+          
+          ### CPU Optimizations:
+          - znver3 (AMD Zen 3)
+          - znver4 (AMD Zen 4)
+          - x86-64 (Generic)
+          - x86-64-v3 (Haswell/Broadwell/Skylake)
+          - x86-64-v4 (AVX512)
+          - haswell (Intel Haswell)
+          - skylake (Intel Skylake)
+          - broadwell (Intel Broadwell)
+          
+          ### Build Info:
+          - Build Number: ${{ github.run_number }}
+          - Commit: ${{ github.sha }}
+        files: artifacts/**/*
+      env:
+        GITHUB_TOKEN: ${{ secrets.KERNEL_TOKEN }}
 
   update-version:
-    needs: [check-version, build-matrix]
-    if: needs.check-version.outputs.should_build == 'true' && !failure()
+    needs: create-release
     runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    
     steps:
-      - uses: actions/checkout@v4.2.0
-      
-      - name: Update version file
-        run: |
-          echo "${{ needs.check-version.outputs.new_version }}" > .last_kernel_version
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add .last_kernel_version
-          git commit -m "Update: kernel ${{ needs.check-version.outputs.new_version }}"
-          git push
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: Save version
+      run: |
+        echo "${{ env.KERNEL_VERSION }}" > .last_kernel_version
+        git config user.name "github-actions"
+        git config user.email "github-actions@github.com"
+        git add .last_kernel_version
+        git commit -m "Update last kernel version to ${{ env.KERNEL_VERSION }}"
+        git push
+      env:
+        GITHUB_TOKEN: ${{ secrets.KERNEL_TOKEN }}
