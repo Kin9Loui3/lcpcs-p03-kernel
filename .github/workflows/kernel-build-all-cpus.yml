@@ -1,4 +1,5 @@
 name: Linux Kernel P03 Build
+
 on:
   workflow_dispatch:
   schedule:
@@ -39,279 +40,145 @@ jobs:
           kmod \
           rsync \
           git \
-          jq
+          wget \
+          curl
+    
+    - name: Debug - Show customization.cfg contents
+      run: |
+        echo "=== Checking for customization.cfg ==="
+        find . -name "customization.cfg" -type f 2>/dev/null
+        echo "=== Contents of customization.cfg ==="
+        cat build-tools/linux-tkg-p03/customization.cfg 2>/dev/null || echo "File not found at expected path"
+        
+        # Also check if it's in a different location
+        find . -name "*.cfg" -type f 2>/dev/null | head -20
     
     - name: Get kernel version from config
       id: kernel_version
       run: |
-        # Try to get version from config file
-        if [ -f "build-tools/linux-tkg-p03/customization.cfg" ]; then
-          VERSION=$(grep '_version=' build-tools/linux-tkg-p03/customization.cfg | head -1 | cut -d'"' -f2)
+        # Try multiple ways to extract version
+        VERSION=""
+        CONFIG_FILE="build-tools/linux-tkg-p03/customization.cfg"
+        
+        # Check if config file exists
+        if [ ! -f "$CONFIG_FILE" ]; then
+          echo "ERROR: Configuration file not found!"
+          echo "version=7.1" >> $GITHUB_OUTPUT
+          exit 0
         fi
         
-        # Fallback to latest stable if no version found
+        # Method 1: Look for _version= variable (typical in TKG configs)
+        VERSION=$(grep -E '^_version=' "$CONFIG_FILE" | sed 's/_version=//' | tr -d '"' | tr -d "'" | head -1)
+        
+        # Method 2: Look for VERSION= variable
         if [ -z "$VERSION" ]; then
-          echo "No version found in config, getting latest stable..."
-          VERSION=$(curl -s https://www.kernel.org/releases.json | jq -r '.releases[] | select(.moniker == "stable") | .version')
+          VERSION=$(grep -E '^VERSION=' "$CONFIG_FILE" | sed 's/VERSION=//' | tr -d '"' | tr -d "'" | head -1)
+        fi
+        
+        # Method 3: Look for kernel version pattern (7.x or 6.x)
+        if [ -z "$VERSION" ]; then
+          VERSION=$(grep -oP '\d+\.\d+(\.\d+)?' "$CONFIG_FILE" | head -1)
+        fi
+        
+        # Method 4: Look for any line containing version
+        if [ -z "$VERSION" ]; then
+          VERSION=$(grep -i 'version' "$CONFIG_FILE" | grep -oP '\d+\.\d+(\.\d+)?' | head -1)
         fi
         
         echo "version=$VERSION" >> $GITHUB_OUTPUT
-       Here's your edited workflow with the fixes for kernel 7+ support:
-
-```yaml
-name: Linux Kernel P03 Build
-on:
-  workflow_dispatch:
-  schedule:
-    - cron: '0 0 * * 1'
-
-jobs:
-  build:
-    strategy:
-      matrix:
-        cpu: [znver3, znver4, x86-64-v3, x86-64-v4, haswell, skylake, broadwell]
-      max-parallel: 4
-      fail-fast: false
-    
-    runs-on: ubuntu-latest
-    timeout-minutes: 180
-    
-    steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 1
-    
-    - name: Install build dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y \
-          build-essential \
-          bc \
-          bison \
-          flex \
-          libssl-dev \
-          libelf-dev \
-          xz-utils \
-          zstd \
-          cpio \
-          dwarves \
-          pahole \
-          kmod \
-          rsync \
-          git \
-          jq
-    
-    - name: Get kernel version from config
-      id: kernel_version
-      run: |
-        # Try to get version from config file
-        if [ -f "build-tools/linux-tkg-p03/customization.cfg" ]; then
-          VERSION=$(grep '_version=' build-tools/linux-tkg-p03/customization.cfg | head -1 | cut -d'"' -f2)
-        fi
+        echo "Detected kernel version: $VERSION"
         
-        # Fallback to latest stable if no version found
+        # Fallback to a default version if empty
         if [ -z "$VERSION" ]; then
-          echo "No version found in config, getting latest stable..."
-          VERSION=$(curl -s https://www.kernel.org/releases.json | jq -r '.releases[] | select(.moniker == "stable") | .version')
+          echo "WARNING: Could not detect kernel version, using default 7.1"
+          echo "version=7.1" >> $GITHUB_OUTPUT
         fi
-        
-        echo "version=$VERSION" >> $GITHUB_OUTPUT
-        echo "Building kernel version: $VERSION"
     
     - name: Download kernel source
       run: |
-        VERSION="${{ steps.kernel_version.outputs.version }}"
-        MAJOR=$(echo $VERSION | cut -d. -f1)
-        echo "Downloading Linux kernel $VERSION from v${MAJOR}.x directory"
+        KERNEL_VERSION="${{ steps.kernel_version.outputs.version }}"
+        echo "Downloading kernel version: $KERNEL_VERSION"
         
-        # Verify the URL exists before downloading
-        URL="https://cdn.kernel.org/pub/linux/kernel/v${MAJOR}.x/linux-${VERSION}.tar.xz"
-        if curl --output /dev/null --silent --head --fail "$URL"; then
-          wget "$URL"
-        else
-          echo "URL $URL not found, trying to find latest..."
-          LATEST=$(curl -s https://www.kernel.org/releases.json | jq -r '.releases[] | select(.moniker == "stable") | .version')
-          MAJOR=$(echo $LATEST | cut -d. -f1)
-          URL="https://cdn.kernel.org/pub/linux/kernel/v${MAJOR}.x/linux-${LATEST}.tar.xz"
-          echo "Using latest kernel: $LATEST"
-          wget "$URL"
-          VERSION=$LATEST
+        # Extract major version for URL path
+        MAJOR_VERSION=$(echo "$KERNEL_VERSION" | cut -d'.' -f1)
+        echo "Major version: $MAJOR_VERSION"
+        
+        # Try to download the exact version
+        DOWNLOAD_SUCCESS=false
+        
+        # Try v7.x format (current)
+        if [ "$MAJOR_VERSION" -ge 7 ]; then
+          echo "Trying v7.x kernel download..."
+          if wget -q "https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-${KERNEL_VERSION}.tar.xz"; then
+            DOWNLOAD_SUCCESS=true
+          fi
         fi
         
-        tar -xf "linux-${VERSION}.tar.xz"
-        mv "linux-${VERSION}" linux-tkg
-        echo "Kernel source extracted to linux-tkg"
+        # Try v6.x format if v7.x fails
+        if [ "$DOWNLOAD_SUCCESS" = false ]; then
+          echo "Trying v6.x kernel download..."
+          if wget -q "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${KERNEL_VERSION}.tar.xz"; then
+            DOWNLOAD_SUCCESS=true
+          fi
+        fi
+        
+        # Try with .0 appended (e.g., 7.1 -> 7.1.0)
+        if [ "$DOWNLOAD_SUCCESS" = false ]; then
+          echo "Trying with .0 appended..."
+          if wget -q "https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-${KERNEL_VERSION}.0.tar.xz"; then
+            KERNEL_VERSION="${KERNEL_VERSION}.0"
+            DOWNLOAD_SUCCESS=true
+          fi
+        fi
+        
+        # Try latest stable kernel if specific version fails
+        if [ "$DOWNLOAD_SUCCESS" = false ]; then
+          echo "Trying to get latest stable kernel..."
+          LATEST=$(curl -s https://www.kernel.org/releases.json | grep -oP '"latest_stable":\s*"\K[^"]+')
+          if [ -n "$LATEST" ]; then
+            echo "Latest stable kernel: $LATEST"
+            MAJOR_VERSION=$(echo "$LATEST" | cut -d'.' -f1)
+            if [ "$MAJOR_VERSION" -ge 7 ]; then
+              if wget -q "https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-${LATEST}.tar.xz"; then
+                KERNEL_VERSION="$LATEST"
+                DOWNLOAD_SUCCESS=true
+              fi
+            fi
+          fi
+        fi
+        
+        if [ "$DOWNLOAD_SUCCESS" = false ]; then
+          echo "ERROR: Failed to download kernel source for version $KERNEL_VERSION"
+          echo "Available versions can be found at: https://www.kernel.org/"
+          exit 1
+        fi
+        
+        echo "Successfully downloaded linux-${KERNEL_VERSION}.tar.xz"
+        tar -xf "linux-${KERNEL_VERSION}.tar.xz"
+        mv "linux-${KERNEL_VERSION}" linux-tkg
     
     - name: Apply patches from repository
       run: |
         cd linux-tkg
         
         # Apply all patches from the patches directory
-        PATCH_DIR=${{ github.workspace }}/build-tools/linux-tkg-p03/patches
+        PATCH_DIR="${{ github.workspace }}/build-tools/linux-tkg-p03/patches"
         if [ -d "$PATCH_DIR" ]; then
-          for patch in "$PATCH_DIR"/*.patch; do
+          # Sort patches to apply them in order
+          patch_count=0
+          for patch in $(ls "$PATCH_DIR"/*.patch 2>/dev/null | sort); do
             if [ -f "$patch" ]; then
               echo "Applying patch: $(basename $patch)"
-              patch -p1 < "$patch" || echo "Warning: $(basename $patch) failed to apply"
+              if patch -p1 < "$patch"; then
+                patch_count=$((patch_count + 1))
+              else
+                echo "Warning: $(basename $patch) failed to apply"
+              fi
             fi
           done
+          echo "Applied $patch_count patches successfully"
+        else
+          echo "No patches directory found at $PATCH_DIR"
+          echo "Creating empty patches directory"
+          mkdir -p "$PATCH_DIR"
         fi
-        
-        # Copy the config if it exists
-        if [ -f "${{ github.workspace }}/build-tools/linux-tkg-p03/p03.config" ]; then
-          echo "Using custom p03.config"
-          cp ${{ github.workspace }}/build-tools/linux-tkg-p03/p03.config .config
-        fi
-    
-    - name: Configure kernel for ${{ matrix.cpu }}
-      run: |
-        cd linux-tkg
-        
-        # If we don't have a config yet, use defconfig
-        if [ ! -f .config ]; then
-          make defconfig
-        fi
-        
-        # Set CPU optimization
-        CPU_OPT="${{ matrix.cpu }}"
-        scripts/config --disable CONFIG_GENERIC_CPU
-        scripts/config --disable CONFIG_MCORE2
-        scripts/config --disable CONFIG_MATOM
-        scripts/config --disable CONFIG_MZEN_V2
-        scripts/config --disable CONFIG_MZEN_V3
-        scripts/config --disable CONFIG_MZEN_V4
-        scripts/config --disable CONFIG_GENERIC_CPU2
-        scripts/config --disable CONFIG_GENERIC_CPU3
-        scripts/config --disable CONFIG_MHASWELL
-        scripts/config --disable CONFIG_MSKYLAKE
-        scripts/config --disable CONFIG_MBROADWELL
-        
-        case $CPU_OPT in
-          znver3)
-            scripts/config --enable CONFIG_MZEN_V3
-            ;;
-          znver4)
-            scripts/config --enable CONFIG_MZEN_V4
-            ;;
-          x86-64-v3)
-            scripts/config --enable CONFIG_GENERIC_CPU2
-            ;;
-          x86-64-v4)
-            scripts/config --enable CONFIG_GENERIC_CPU3
-            ;;
-          haswell)
-            scripts/config --enable CONFIG_MHASWELL
-            ;;
-          skylake)
-            scripts/config --enable CONFIG_MSKYLAKE
-            ;;
-          broadwell)
-            scripts/config --enable CONFIG_MBROADWELL
-            ;;
-        esac
-        
-        # Enable TKG optimizations
-        scripts/config --enable CONFIG_HZ_1000
-        scripts/config --set-val CONFIG_HZ 1000
-        scripts/config --enable CONFIG_SCHED_ALT
-        scripts/config --enable CONFIG_BORE_SCHEDULER
-        scripts/config --enable CONFIG_TCP_CONG_BBR
-        scripts/config --enable CONFIG_NET_SCH_FQ
-        scripts/config --enable CONFIG_NET_SCH_FQ_CODEL
-        scripts/config --enable CONFIG_NET_SCH_CAKE
-        scripts/config --enable CONFIG_NETFILTER_XT_MATCH_BPF
-        scripts/config --enable CONFIG_BPFILTER
-        scripts/config --enable CONFIG_BPF_SYSCALL
-        scripts/config --enable CONFIG_CGROUP_BPF
-        
-        # Finalize configuration
-        make olddefconfig
-        
-        echo "CPU configuration:"
-        grep -E "CONFIG_(MZEN_V[234]|GENERIC_CPU|MHASWELL|MSKYLAKE|MBROADWELL)" .config
-    
-    - name: Build kernel
-      run: |
-        cd linux-tkg
-        make -j$(nproc) bzImage
-        make -j$(nproc) modules
-        echo "Build completed for ${{ matrix.cpu }}"
-    
-    - name: Package kernel
-      run: |
-        cd linux-tkg
-        
-        # Create package structure
-        mkdir -p package/boot
-        mkdir -p package/lib/modules
-        
-        # Copy kernel image
-        cp arch/x86/boot/bzImage package/boot/vmlinuz-linux-tkg-${{ matrix.cpu }}
-        
-        # Install modules
-        make modules_install INSTALL_MOD_PATH=package
-        
-        # Create compressed packages
-        cd package
-        tar -czf ../linux-tkg-${{ matrix.cpu }}.tar.gz *
-        tar -cf ../linux-tkg-${{ matrix.cpu }}.tar *
-        zstd --compress -f ../linux-tkg-${{ matrix.cpu }}.tar -o ../linux-tkg-${{ matrix.cpu }}.tar.zst
-        rm -f ../linux-tkg-${{ matrix.cpu }}.tar
-        
-        cd ..
-        echo "Packages created for ${{ matrix.cpu }}"
-    
-    - name: Upload kernel artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: linux-tkg-${{ matrix.cpu }}
-        path: |
-          linux-tkg/linux-tkg-${{ matrix.cpu }}.tar.gz
-          linux-tkg/linux-tkg-${{ matrix.cpu }}.tar.zst
-        retention-days: 7
-        if-no-files-found: warn
-
-  create-release:
-    needs: build
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
-    
-    steps:
-    - name: Download all artifacts
-      uses: actions/download-artifact@v4
-      with:
-        path: artifacts
-    
-    - name: Create Release
-      uses: softprops/action-gh-release@v1
-      with:
-        tag_name: kernel-build-${{ github.run_number }}
-        name: "Linux P03 Kernel Build ${{ github.run_number }}"
-        body: |
-          ## Linux P03 Kernel Build
-          
-          ### CPU Optimizations:
-          - znver3 (AMD Zen 3)
-          - znver4 (AMD Zen 4)
-          - x86-64-v3 (Haswell/Broadwell/Skylake)
-          - x86-64-v4 (AVX512)
-          - haswell (Intel Haswell)
-          - skylake (Intel Skylake)
-          - broadwell (Intel Broadwell)
-          
-          ### Features:
-          - Custom patches from build-tools/linux-tkg-p03
-          - CPU-specific optimizations
-          - 1000Hz timer
-          - BORE scheduler
-          - BBR congestion control
-          - BPF support
-          
-          ### Build Info:
-          - Build Number: ${{ github.run_number }}
-          - Kernel Version: ${{ needs.build.outputs.kernel_version }}
-          - Commit: ${{ github.sha }}
-        files: artifacts/**/*
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
