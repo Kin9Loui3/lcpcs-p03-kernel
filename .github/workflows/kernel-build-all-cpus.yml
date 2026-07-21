@@ -1,3 +1,5 @@
+name: Linux TKG P03 Build All CPUs
+
 runs-on: ubuntu-latest
 timeout-minutes: 180
 
