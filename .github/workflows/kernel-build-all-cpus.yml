@@ -1,250 +1,169 @@
-name: Build Arch Kernel on Ubuntu
+name: Build Optimized Kernel
 
 on:
   push:
     branches: [ main ]
-  schedule:
-    - cron: '0 0 * * 0'  # Weekly
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
   build:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        cpu: [zen3, zen4, x86-64-v3, x86-64-v4]
+        cpu_type: [zen3, zen4, x86-64-v3, x86-64-v4]
+    
+    permissions:
+      contents: write
+      packages: write
     
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-      - name: Install build dependencies
+      - name: Set up cache
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cache/pip
+            ~/.cargo
+            kernel-cache
+          key: kernel-build-${{ matrix.cpu_type }}-${{ hashFiles('**/Dockerfile') }}
+          restore-keys: |
+            kernel-build-${{ matrix.cpu_type }}-
+            kernel-build-
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          push: false
+          load: true
+          tags: kernel-builder:${{ matrix.cpu_type }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            CPU_TYPE=${{ matrix.cpu_type }}
+
+      - name: Build kernel in container
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            base-devel \
-            git \
-            fakeroot \
-            binutils \
-            gcc \
-            make \
-            patch \
-            libelf-dev \
-            libssl-dev \
-            bison \
-            flex \
-            bc \
-            kmod \
-            cpio \
-            pahole \
-            zstd \
-            wget \
-            curl
+          docker run --rm \
+            -v ${{ github.workspace }}/output:/output \
+            -e CPU_TYPE=${{ matrix.cpu_type }} \
+            kernel-builder:${{ matrix.cpu_type }}
 
-      - name: Install AUR helper (yay)
+      - name: List output files
         run: |
-          sudo apt-get install -y cargo rustc
-          git clone https://aur.archlinux.org/yay.git
-          cd yay
-          makepkg -si --noconfirm || true
-          cd ..
-
-      - name: Create non-root build user
-        run: |
-          sudo useradd -m -s /bin/bash builder || true
-          sudo usermod -aG sudo builder
-          echo "builder ALL=(ALL) NOPASSWD: ALL" | sudo tee /etc/sudoers.d/builder
-
-      - name: Download kernel source
-        run: |
-          mkdir -p /tmp/kernel-build
-          cd /tmp/kernel-build
-          KERNEL_VERSION=$(curl -s https://www.kernel.org/releases.json | grep -oP '"latest_stable":\{"version":"[^"]+' | cut -d'"' -f4)
-          echo "KERNEL_VERSION=$KERNEL_VERSION" >> $GITHUB_ENV
-          wget https://cdn.kernel.org/pub/linux/kernel/v${KERNEL_VERSION%%.*}.x/linux-${KERNEL_VERSION}.tar.xz
-          tar -xf linux-${KERNEL_VERSION}.tar.xz
-          cd linux-${KERNEL_VERSION}
-
-      - name: Create PKGBUILD
-        run: |
-          mkdir -p /tmp/kernel-build/pkgbuild
-          cd /tmp/kernel-build/pkgbuild
-          cat > PKGBUILD << 'PKGBUILD_EOF'
-          pkgbase=linux-lcpcs-p03
-          pkgname=(linux-lcpcs-p03 linux-lcpcs-p03-headers)
-          pkgver=KERNEL_VERSION_PLACEHOLDER
-          pkgrel=1
-          pkgdesc="Linux kernel - LCPCs P03 optimized for CPU_PLACEHOLDER"
-          arch=(x86_64)
-          url="https://www.kernel.org/"
-          license=(GPL2)
-          makedepends=(
-            bc kmod libelf pahole cpio perl tar xz
-            gcc binutils make patch libelf-dev libssl-dev bison flex
-          )
-          options=(!strip)
-          source=(
-            "https://cdn.kernel.org/pub/linux/kernel/v${pkgver%%.*}.x/linux-${pkgver}.tar.xz"
-            "config"
-          )
-          
-          _kernver="${pkgver}-lcpcs-p03-CPU_PLACEHOLDER"
-          
-          prepare() {
-            cd linux-${pkgver}
-            
-            # Apply custom config
-            cp ../config .config
-            
-            # Set CPU optimization
-            case "CPU_PLACEHOLDER" in
-              zen3)
-                scripts/config --set-str CONFIG_GENERIC_CPU "Zen 3"
-                scripts/config --enable CONFIG_GENERIC_CPU3
-                ;;
-              zen4)
-                scripts/config --set-str CONFIG_GENERIC_CPU "Zen 4"
-                scripts/config --enable CONFIG_GENERIC_CPU4
-                ;;
-              x86-64-v3)
-                scripts/config --set-str CONFIG_GENERIC_CPU "x86-64-v3"
-                ;;
-              x86-64-v4)
-                scripts/config --set-str CONFIG_GENERIC_CPU "x86-64-v4"
-                ;;
-            esac
-            
-            # Optimize for performance
-            scripts/config --disable CONFIG_DEBUG_INFO
-            scripts/config --disable CONFIG_DEBUG_KERNEL
-            scripts/config --enable CONFIG_LOCALVERSION_AUTO
-            scripts/config -s LOCALVERSION "-lcpcs-p03-CPU_PLACEHOLDER"
-            
-            # Make olddefconfig
-            make olddefconfig
-          }
-          
-          build() {
-            cd linux-${pkgver}
-            make all -j$(nproc)
-          }
-          
-          package_linux-lcpcs-p03() {
-            pkgdesc="Linux kernel - LCPCs P03 optimized"
-            depends=(cpio kmod initramfs)
-            optdepends=('wireless-regdb: to set the correct wireless regulator domain')
-            provides=(VIRTUALKERNEL="${pkgver}")
-            
-            cd linux-${pkgver}
-            
-            # Install modules
-            mkdir -p "$pkgdir/usr/lib/modules/${_kernver}"
-            make INSTALL_MOD_PATH="$pkgdir/usr" INSTALL_MOD_STRIP=1 modules_install
-            
-            # Install kernel image
-            mkdir -p "$pkgdir/boot"
-            install -Dm644 arch/x86/boot/bzImage "$pkgdir/boot/vmlinuz-${_kernver}"
-            install -Dm644 System.map "$pkgdir/boot/System.map-${_kernver}"
-            install -Dm644 .config "$pkgdir/boot/config-${_kernver}"
-            
-            # Remove unnecessary files
-            rm -rf "$pkgdir/usr/lib/modules/${_kernver}/build"
-            rm -rf "$pkgdir/usr/lib/modules/${_kernver}/source"
-        
-            # Install mkinitcpio preset
-            mkdir -p "$pkgdir/etc/mkinitcpio.d"
-            cat > "$pkgdir/etc/mkinitcpio.d/${pkgbase}.preset" << EOF
-            
-# mkinitcpio preset file for the '${pkgbase}' package
-
-ALL_config="/etc/mkinitcpio.conf"
-ALL_kver="/boot/vmlinuz-${_kernver}"
-ALL_microcode=(/boot/*-ucode.img)
-
-PRESETS=('default' 'fallback')
-
-default_image="/boot/initramfs-${_kernver}.img"
-default_options="-v"
-
-fallback_image="/boot/initramfs-${_kernver}-fallback.img"
-fallback_options="-S autodetect"
-EOF
-          }
-          
-          package_linux-lcpcs-p03-headers() {
-            pkgdesc="Headers and scripts for building modules for the ${pkgbase} kernel"
-            depends=(pahole)
-            
-            cd linux-${pkgver}
-            
-            mkdir -p "$pkgdir/usr/lib/modules/${_kernver}"
-            
-            # Install headers
-            cp -t "$pkgdir/usr/lib/modules/${_kernver}/build" -a include scripts
-            
-            # Install Makefile and Kconfig
-            install -Dm644 Makefile "$pkgdir/usr/lib/modules/${_kernver}/build/Makefile"
-            install -Dm644 kernel/Makefile "$pkgdir/usr/lib/modules/${_kernver}/build/kernel/Makefile"
-            install -Dm644 .config "$pkgdir/usr/lib/modules/${_kernver}/build/.config"
-            
-            # Copy arch files
-            mkdir -p "$pkgdir/usr/lib/modules/${_kernver}/build/arch/x86"
-            cp -t "$pkgdir/usr/lib/modules/${_kernver}/build/arch/x86" -a arch/x86/include arch/x86/Makefile*
-            
-            # Install tools
-            mkdir -p "$pkgdir/usr/lib/modules/${_kernver}/build/tools/objtool"
-            cp -t "$pkgdir/usr/lib/modules/${_kernver}/build/tools/objtool" -a tools/objtool/objtool
-            
-            # Remove unnecessary files
-            find "$pkgdir/usr/lib/modules/${_kernver}/build" -name "*.o" -delete
-            find "$pkgdir/usr/lib/modules/${_kernver}/build" -name "*.a" -delete
-            
-            # Create symlink
-            mkdir -p "$pkgdir/usr/lib/modules/${_kernver}"
-            ln -sr "$pkgdir/usr/lib/modules/${_kernver}/build" "$pkgdir/usr/lib/modules/${_kernver}/source"
-          }
-          PKGBUILD_EOF
-
-      - name: Generate default config
-        run: |
-          cd /tmp/kernel-build/linux-${KERNEL_VERSION}
-          make defconfig
-          cp .config /tmp/kernel-build/pkgbuild/config
-
-      - name: Build kernel package
-        run: |
-          cd /tmp/kernel-build/pkgbuild
-          
-          # Replace placeholders
-          sed -i "s/KERNEL_VERSION_PLACEHOLDER/${KERNEL_VERSION}/g" PKGBUILD
-          sed -i "s/CPU_PLACEHOLDER/${{ matrix.cpu }}/g" PKGBUILD
-          
-          # Build as non-root (optional, for security)
-          # sudo -u builder makepkg -s --noconfirm
-          
-          # Or build as root (faster)
-          makepkg -s --noconfirm
+          ls -lah output/
+          du -sh output/*
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v3
         with:
-          name: kernel-${{ matrix.cpu }}
-          path: /tmp/kernel-build/pkgbuild/*.pkg.tar.zst
+          name: kernel-${{ matrix.cpu_type }}
+          path: output/
           retention-days: 30
 
-      - name: Create Release
-        if: startsWith(github.ref, 'refs/tags/')
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: success()
+    
+    permissions:
+      contents: write
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v3
+        with:
+          path: all-kernels
+
+      - name: List downloaded artifacts
+        run: |
+          find all-kernels -type f -exec ls -lh {} \;
+
+      - name: Create release tag
+        id: tag
+        run: |
+          TAG="kernel-$(date +%Y%m%d-%H%M%S)"
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "Created tag: $TAG"
+
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
-          files: /tmp/kernel-build/pkgbuild/*.pkg.tar.zst
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: Optimized Kernel Build - ${{ steps.tag.outputs.tag }}
+          body: |
+            ## Optimized Kernel Packages
+            
+            **Build Date:** ${{ github.event.head_commit.timestamp }}
+            **Commit:** ${{ github.sha }}
+            **Repository:** ${{ github.repository }}
+            
+            ### Available CPU Optimizations:
+            
+            | Package | Target CPU | Best For |
+            |---------|-----------|----------|
+            | **zen3** | Ryzen 3000/5000 | 3700X, 5700X, 5800X3D |
+            | **zen4** | Ryzen 7000 | 7700X, 7950X |
+            | **x86-64-v3** | Generic (AVX2) | Intel 6th+ gen, AMD Zen+ |
+            | **x86-64-v4** | Generic (AVX-512) | Intel 12th+ gen, AMD Zen 4c |
+            
+            ### Installation Instructions:
+            
+            ```bash
+            # 1. Download the kernel package for your CPU
+            # 2. Extract to /tmp
+            cd /tmp
+            tar xzf kernel-*.tar.gz
+            
+            # 3. Backup current kernel
+            sudo cp /boot/vmlinuz-linux /boot/vmlinuz-linux.bak
+            sudo cp /boot/initramfs-linux.img /boot/initramfs-linux.img.bak
+            
+            # 4. Install new kernel
+            sudo cp vmlinuz-* /boot/
+            sudo cp initramfs-* /boot/
+            
+            # 5. Update bootloader
+            sudo grub-mkconfig -o /boot/grub/grub.cfg
+            
+            # 6. Reboot
+            sudo reboot
+            ```
+            
+            ### Rollback (if needed):
+            
+            ```bash
+            sudo cp /boot/vmlinuz-linux.bak /boot/vmlinuz-linux
+            sudo cp /boot/initramfs-linux.img.bak /boot/initramfs-linux.img
+            sudo grub-mkconfig -o /boot/grub/grub.cfg
+            sudo reboot
+            ```
+          files: all-kernels/**/*
           draft: false
           prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Generate checksums
+      - name: Print download info
         run: |
-          cd /tmp/kernel-build/pkgbuild
-          sha256sum *.pkg.tar.zst > SHA256SUMS
-          echo "## SHA256 Checksums" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          cat SHA256SUMS >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "✅ Release created successfully!"
+          echo ""
+          echo "📦 Download from: https://github.com/${{ github.repository }}/releases/tag/${{ steps.tag.outputs.tag }}"
+          echo ""
+          echo "Available packages:"
+          find all-kernels -type f -name "*.tar.gz" -o -name "*.deb" -o -name "*.rpm" | sort
