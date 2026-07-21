@@ -21,6 +21,15 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
+          
+      - name: Cache ccache
+        uses: actions/cache@v3
+        with:
+          path: ~/.ccache
+          key: ${{ runner.os }}-ccache-${{ matrix.cpu }}-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-ccache-${{ matrix.cpu }}-
+            ${{ runner.os }}-ccache-
 
       - name: Install build dependencies
         run: |
@@ -43,7 +52,14 @@ jobs:
             wget \
             curl \
             fakeroot
-
+            
+      - name: Setup ccache
+        run: |
+          sudo apt-get install -y ccache
+          ccache --max-size=2G
+          echo "CCACHE_DIR=$HOME/.ccache" >> $GITHUB_ENV
+          echo "/usr/lib/ccache" >> $GITHUB_PATH
+          
       - name: Get latest kernel 7.x version
         id: kernel_version
         run: |
@@ -80,161 +96,165 @@ jobs:
 
           echo "version=$KERNEL_VERSION" >> $GITHUB_OUTPUT
           echo "SUCCESS: Using kernel $KERNEL_VERSION"
-      if wget -q "https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-${KERNEL_VERSION}.tar.xz"; then
-        echo "Successfully downloaded linux-${KERNEL_VERSION}.tar.xz"
-      else
-        echo "ERROR: Failed to download kernel source"
-        exit 1
-      fi
 
-      tar -xf "linux-${KERNEL_VERSION}.tar.xz"
-      mv "linux-${KERNEL_VERSION}" linux-tkg
-      echo "Kernel source extracted to linux-tkg/"
-
-    - name: Apply patches and config
+      - name: Download kernel source
         run: |
-        cd linux-tkg
-
-        # Copy P03 config
-        if [ -f "${{ github.workspace }}/build-tools/linux-tkg-p03/p03.config" ]; then
-            cp "${{ github.workspace }}/build-tools/linux-tkg-p03/p03.config" .config
-            echo "Using P03 config"
-        else
-            echo "Warning: p03.config not found, using default"
-            make defconfig
-        fi
-
-        # Apply patches
-        PATCH_DIR="${{ github.workspace }}/build-tools/linux-tkg-p03/patches"
-        if [ -d "$PATCH_DIR" ]; then
-            patch_count=0
-            for patch in $(ls "$PATCH_DIR"/*.patch 2>/dev/null | sort); do
-            if [ -f "$patch" ]; then
-                echo "Applying patch: $(basename $patch)"
-                if patch -p1 < "$patch"; then
-                patch_count=$((patch_count + 1))
-                else
-                echo "Warning: $(basename $patch) failed to apply"
-                fi
-            fi
-            done
-            echo "Applied $patch_count patches"
-        fi
-
-    - name: Configure for CPU optimization
+          KERNEL_VERSION="${{ steps.kernel_version.outputs.version }}"
+          if wget -q "https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-${KERNEL_VERSION}.tar.xz"; then
+            echo "Successfully downloaded linux-${KERNEL_VERSION}.tar.xz"
+          else
+            echo "ERROR: Failed to download kernel source"
+            exit 1
+          fi
+          tar -xf "linux-${KERNEL_VERSION}.tar.xz"
+          mv "linux-${KERNEL_VERSION}" linux-tkg
+          echo "Kernel source extracted to linux-tkg/"
+          
+      - name: Apply patches and config
         run: |
-        cd linux-tkg
+          cd linux-tkg
 
-        CPU_OPT="${{ matrix.cpu }}"
-        echo "Configuring for: $CPU_OPT"
+          # Copy P03 config
+          if [ -f "${{ github.workspace }}/build-tools/linux-tkg-p03/p03.config" ]; then
+              cp "${{ github.workspace }}/build-tools/linux-tkg-p03/p03.config" .config
+              echo "Using P03 config"
+          else
+              echo "Warning: p03.config not found, using default"
+              make defconfig
+          fi
 
-        case "$CPU_OPT" in
+          # Apply patches
+          PATCH_DIR="${{ github.workspace }}/build-tools/linux-tkg-p03/patches"
+          if [ -d "$PATCH_DIR" ]; then
+              patch_count=0
+              for patch in $(ls "$PATCH_DIR"/*.patch 2>/dev/null | sort); do
+              if [ -f "$patch" ]; then
+                  echo "Applying patch: $(basename $patch)"
+                  if patch -p1 < "$patch"; then
+                  patch_count=$((patch_count + 1))
+                  else
+                  echo "Warning: $(basename $patch) failed to apply"
+                  fi
+              fi
+              done
+              echo "Applied $patch_count patches"
+          fi
+
+      - name: Configure for CPU optimization
+        run: |
+          cd linux-tkg
+      
+          CPU_OPT="${{ matrix.cpu }}"
+          echo "Configuring for: $CPU_OPT"
+      
+          case "$CPU_OPT" in
             znver3)
-            ./scripts/config --set-val CONFIG_M_ZNVER3 y
-            ;;
+              ./scripts/config --set-val CONFIG_M_ZNVER3 y
+              ;;
             znver4)
-            ./scripts/config --set-val CONFIG_M_ZNVER4 y
-            ;;
+              ./scripts/config --set-val CONFIG_M_ZNVER4 y
+              ;;
+            znver5)
+              ./scripts/config --set-val CONFIG_M_ZNVER5 y
+              ;;
+            x86-64)
+              ./scripts/config --set-val CONFIG_M_X86_64 y
+              ;;
+            x86-64-v2)
+              ./scripts/config --set-val CONFIG_M_X86_64_V2 y
+              ;;
             x86-64-v3)
-            ./scripts/config --set-val CONFIG_M_X86_64_V3 y
-            ;;
+              ./scripts/config --set-val CONFIG_M_X86_64_V3 y
+              ;;
             x86-64-v4)
-            ./scripts/config --set-val CONFIG_M_X86_64_V4 y
-            ;;
-            haswell)
-            ./scripts/config --set-val CONFIG_M_HASWELL y
-            ;;
-            skylake)
-            ./scripts/config --set-val CONFIG_M_SKYLAKE y
-            ;;
-            broadwell)
-            ./scripts/config --set-val CONFIG_M_BROADWELL y
-            ;;
-        esac
-
-        # Optimize for build speed
-        ./scripts/config --disable DEBUG_INFO
-        ./scripts/config --disable DEBUG_KERNEL
-        ./scripts/config --set-val CONFIG_KERNEL_ZSTD y
-
-        # Make sure we have a valid config
-        make oldconfig < /dev/null
-        
-    - name: Build kernel
+              ./scripts/config --set-val CONFIG_M_X86_64_V4 y
+              ;;
+          esac
+      
+          # Optimize for build speed
+          ./scripts/config --disable DEBUG_INFO
+          ./scripts/config --disable DEBUG_KERNEL
+          ./scripts/config --set-val CONFIG_KERNEL_ZSTD y
+      
+          # Make sure we have a valid config
+          make oldconfig < /dev/null
+      
+      - name: Build kernel
         run: |
-        cd linux-tkg
-
-        # Get CPU count for parallel builds
-        CPU_COUNT=$(nproc)
-        BUILD_JOBS=$((CPU_COUNT * 2))
-        echo "Building with $BUILD_JOBS parallel jobs"
-
-        # Build kernel and modules
-        make -j$BUILD_JOBS
-        if [ $? -ne 0 ]; then
+          cd linux-tkg
+    
+          # Get CPU count for parallel builds
+          CPU_COUNT=$(nproc)
+          BUILD_JOBS=$((CPU_COUNT * 2))
+          echo "Building with $BUILD_JOBS parallel jobs"
+    
+          # Build kernel and modules
+          make -j$BUILD_JOBS
+          if [ $? -ne 0 ]; then
             echo "ERROR: Kernel build failed!"
             exit 1
-        fi
-
-        make -j$BUILD_JOBS modules
-        if [ $? -ne 0 ]; then
+          fi
+    
+          make -j$BUILD_JOBS modules
+          if [ $? -ne 0 ]; then
             echo "ERROR: Modules build failed!"
             exit 1
-        fi
-
-        echo "Kernel build completed successfully"
-
-    - name: Build kernel packages
+          fi
+    
+          echo "Kernel build completed successfully"
+    
+      - name: Build kernel packages
         run: |
-        cd linux-tkg
-
-        # Create package directory
-        PKG_DIR="${{ github.workspace }}/kernel-packages"
-        mkdir -p "$PKG_DIR"
-
-        # Install modules
-        make modules_install INSTALL_MOD_PATH="$PKG_DIR"
-
-        # Install kernel
-        make install INSTALL_PATH="$PKG_DIR/boot"
-
-        # Copy config
-        cp .config "$PKG_DIR/boot/config-${{ steps.kernel_version.outputs.version }}"
-
-        # Create tarball
-        cd "$PKG_DIR"
-        tar -czf "${{ github.workspace }}/kernel-${{ matrix.cpu }}.tar.gz" .
-        echo "Package created: kernel-${{ matrix.cpu }}.tar.gz"
-
-    - name: Upload kernel package
+          cd linux-tkg
+      
+          # Create package directory
+          PKG_DIR="${{ github.workspace }}/kernel-packages"
+          mkdir -p "$PKG_DIR"
+      
+          # Install modules
+          make modules_install INSTALL_MOD_PATH="$PKG_DIR"
+      
+          # Install kernel
+          make install INSTALL_PATH="$PKG_DIR/boot"
+      
+          # Copy config
+          cp .config "$PKG_DIR/boot/config-${{ steps.kernel_version.outputs.version }}"
+      
+          # Create tarball
+          cd "$PKG_DIR"
+          tar -czf "${{ github.workspace }}/kernel-${{ matrix.cpu }}.tar.gz" .
+          echo "Package created: kernel-${{ matrix.cpu }}.tar.gz"
+        
+      - name: Upload kernel package
         uses: actions/upload-artifact@v4
         with:
-        name: kernel-p03-${{ matrix.cpu }}-${{ steps.kernel_version.outputs.version }}
-        path: kernel-${{ matrix.cpu }}.tar.gz
-        compression-level: 0
-        retention-days: 90
+          name: kernel-p03-${{ matrix.cpu }}-${{ steps.kernel_version.outputs.version }}
+          path: kernel-${{ matrix.cpu }}.tar.gz
+          compression-level: 0
+          retention-days: 90
 
-    - name: Upload build logs on failure
+      - name: Upload build logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-        name: build-logs-${{ matrix.cpu }}
-        path: |
+          name: build-logs-${{ matrix.cpu }}
+          path: |
             linux-tkg/build.log
             linux-tkg/.config
-        retention-days: 30
-    - name: Create release
+          retention-days: 30
+
+      - name: Create release
         if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v1
         with:
-        tag_name: kernel-p03-${{ steps.kernel_version.outputs.version }}
-        name: "Linux P03 Kernel ${{ steps.kernel_version.outputs.version }}"
-        files: |
+          tag_name: kernel-p03-${{ steps.kernel_version.outputs.version }}
+          name: "Linux P03 Kernel ${{ steps.kernel_version.outputs.version }}"
+          files: |
             kernel-*.tar.gz
-        draft: false
-        prerelease: false
-        generate_release_notes: false
-        body: |
+          draft: false
+          prerelease: false
+          generate_release_notes: false
+          body: |
             ## Linux P03 Kernel Build
             - **Version:** ${{ steps.kernel_version.outputs.version }}
             - **CPU Optimizations:** znver3, znver4, x86-64-v3, x86-64-v4, haswell, skylake, broadwell
@@ -251,10 +271,10 @@ jobs:
             tar -xzf kernel-<cpu>.tar.gz -C /
             update-grub
             ```
-    - name: Cleanup
+      - name: Cleanup
         if: always()
         run: |
-        rm -rf linux-*.tar.xz
-        rm -rf linux-tkg
-        rm -rf kernel-packages
-        echo "Cleanup completed"
+          rm -rf linux-*.tar.xz
+          rm -rf linux-tkg
+          rm -rf kernel-packages
+          echo "Cleanup completed"
