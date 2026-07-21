@@ -38,20 +38,110 @@ jobs:
           pahole \
           kmod \
           rsync \
-          git
+          git \
+          jq
     
     - name: Get kernel version from config
       id: kernel_version
       run: |
-        VERSION=$(grep '_version=' build-tools/linux-tkg-p03/customization.cfg | head -1 | cut -d'"' -f2)
+        # Try to get version from config file
+        if [ -f "build-tools/linux-tkg-p03/customization.cfg" ]; then
+          VERSION=$(grep '_version=' build-tools/linux-tkg-p03/customization.cfg | head -1 | cut -d'"' -f2)
+        fi
+        
+        # Fallback to latest stable if no version found
+        if [ -z "$VERSION" ]; then
+          echo "No version found in config, getting latest stable..."
+          VERSION=$(curl -s https://www.kernel.org/releases.json | jq -r '.releases[] | select(.moniker == "stable") | .version')
+        fi
+        
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+       Here's your edited workflow with the fixes for kernel 7+ support:
+
+```yaml
+name: Linux Kernel P03 Build
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 0 * * 1'
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        cpu: [znver3, znver4, x86-64-v3, x86-64-v4, haswell, skylake, broadwell]
+      max-parallel: 4
+      fail-fast: false
+    
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 1
+    
+    - name: Install build dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential \
+          bc \
+          bison \
+          flex \
+          libssl-dev \
+          libelf-dev \
+          xz-utils \
+          zstd \
+          cpio \
+          dwarves \
+          pahole \
+          kmod \
+          rsync \
+          git \
+          jq
+    
+    - name: Get kernel version from config
+      id: kernel_version
+      run: |
+        # Try to get version from config file
+        if [ -f "build-tools/linux-tkg-p03/customization.cfg" ]; then
+          VERSION=$(grep '_version=' build-tools/linux-tkg-p03/customization.cfg | head -1 | cut -d'"' -f2)
+        fi
+        
+        # Fallback to latest stable if no version found
+        if [ -z "$VERSION" ]; then
+          echo "No version found in config, getting latest stable..."
+          VERSION=$(curl -s https://www.kernel.org/releases.json | jq -r '.releases[] | select(.moniker == "stable") | .version')
+        fi
+        
         echo "version=$VERSION" >> $GITHUB_OUTPUT
         echo "Building kernel version: $VERSION"
     
     - name: Download kernel source
       run: |
-        wget https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${{ steps.kernel_version.outputs.version }}.tar.xz
-        tar -xf linux-${{ steps.kernel_version.outputs.version }}.tar.xz
-        mv linux-${{ steps.kernel_version.outputs.version }} linux-tkg
+        VERSION="${{ steps.kernel_version.outputs.version }}"
+        MAJOR=$(echo $VERSION | cut -d. -f1)
+        echo "Downloading Linux kernel $VERSION from v${MAJOR}.x directory"
+        
+        # Verify the URL exists before downloading
+        URL="https://cdn.kernel.org/pub/linux/kernel/v${MAJOR}.x/linux-${VERSION}.tar.xz"
+        if curl --output /dev/null --silent --head --fail "$URL"; then
+          wget "$URL"
+        else
+          echo "URL $URL not found, trying to find latest..."
+          LATEST=$(curl -s https://www.kernel.org/releases.json | jq -r '.releases[] | select(.moniker == "stable") | .version')
+          MAJOR=$(echo $LATEST | cut -d. -f1)
+          URL="https://cdn.kernel.org/pub/linux/kernel/v${MAJOR}.x/linux-${LATEST}.tar.xz"
+          echo "Using latest kernel: $LATEST"
+          wget "$URL"
+          VERSION=$LATEST
+        fi
+        
+        tar -xf "linux-${VERSION}.tar.xz"
+        mv "linux-${VERSION}" linux-tkg
+        echo "Kernel source extracted to linux-tkg"
     
     - name: Apply patches from repository
       run: |
