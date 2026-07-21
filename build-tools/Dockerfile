@@ -12,7 +12,10 @@ RUN pacman -Syu --noconfirm && \
     lld \
     git \
     ccache \
-    sudo && \
+    sudo \
+    jq \
+    curl \
+    wget && \
     pacman -Scc --noconfirm
 
 # Create non-root user for building
@@ -28,7 +31,7 @@ RUN git clone https://github.com/Frogging-Family/linux-tkg.git .
 COPY linux-tkg-p03/customization.cfg ./customization.cfg
 COPY linux-tkg-p03/patches/ ./patches/
 COPY linux-tkg-p03/p03.config ./p03.config
-COPY linux-tkg-p03/build.sh /build-tools/build.sh
+COPY build-tools/build.sh /build-tools/build.sh
 
 # Set permissions
 RUN mkdir -p /output && \
