@@ -123,21 +123,32 @@ jobs:
               make defconfig
           fi
 
-          # Apply patches
-          PATCH_DIR="${{ github.workspace }}/build-tools/linux-tkg-p03/patches"
+          # Set variables
+          PATCH_DIR="${1:-./patches}"
+          SOURCE_DIR="${2:-.}"
+          
+          # Check if patch directory exists
           if [ -d "$PATCH_DIR" ]; then
+              # Initialize patch counter
               patch_count=0
+              
+              # Loop through sorted patch files
               for patch in $(ls "$PATCH_DIR"/*.patch 2>/dev/null | sort); do
-              if [ -f "$patch" ]; then
-                  echo "Applying patch: $(basename $patch)"
-                  if patch -p1 < "$patch"; then
-                  patch_count=$((patch_count + 1))
-                  else
-                  echo "Warning: $(basename $patch) failed to apply"
+                  # Check if file exists
+                  if [ -f "$patch" ]; then
+                      echo "Applying patch: $patch"
+                      patch -p1 < "$patch"
+                      if [ $? -ne 0 ]; then
+                          echo "ERROR: Failed to apply patch $patch"
+                          exit 1
+                      fi
+                      patch_count=$((patch_count + 1))
                   fi
-              fi
               done
-              echo "Applied $patch_count patches"
+              
+              echo "Applied $patch_count patches from $PATCH_DIR"
+          else
+              echo "No patch directory found at $PATCH_DIR"
           fi
 
       - name: Configure for CPU optimization
