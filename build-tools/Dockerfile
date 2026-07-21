@@ -12,7 +12,7 @@ RUN pacman -Syu --noconfirm && \
     git \
     ccache \
     sudo && \
-    pacman -Scc --noconfirm  # Clean package cache to reduce image size
+    pacman -Scc --noconfirm
 
 # Create non-root user for building
 RUN useradd -m -s /bin/bash builder && \
@@ -34,17 +34,35 @@ RUN mkdir -p /output && \
     chmod +x /build-tools/build.sh && \
     chown -R builder:builder /linux-tkg /build-tools /output
 
-# Create output directory
-RUN mkdir -p /output
+# Create output directory and ccache directory
+RUN mkdir -p /output /home/builder/.ccache && \
+    chown -R builder:builder /home/builder/.ccache
+
+# Pre-configure ccache for optimal performance
+RUN echo "max_size = 10G" > /home/builder/.ccache/ccache.conf && \
+    echo "compression = true" >> /home/builder/.ccache/ccache.conf && \
+    echo "compression_level = 6" >> /home/builder/.ccache/ccache.conf && \
+    echo "sloppiness = pch_defines,time_macros,include_file_mtime,include_file_ctime" >> /home/builder/.ccache/ccache.conf && \
+    echo "cache_dir = /home/builder/.ccache" >> /home/builder/.ccache/ccache.conf
 
 # Switch to builder user
 USER builder
 
-# Set environment variables
+# Set environment variables for faster compilation
 ENV CPU_TYPE=${CPU_TYPE} \
     _compiler=llvm \
     _lto_mode=thin \
-    _kernel_base=stable
+    _kernel_base=stable \
+    CCACHE_DIR=/home/builder/.ccache \
+    CCACHE_MAXSIZE=10G \
+    CCACHE_SLOPPINESS=pch_defines,time_macros,include_file_mtime,include_file_ctime \
+    CCACHE_COMPRESS=1 \
+    CCACHE_COMPRESSLEVEL=6 \
+    MAKEFLAGS="-j$(nproc)" \
+    KBUILD_PARALLEL=$(nproc) \
+    KCFLAGS="-pipe -O2 -march=${CPU_TYPE} -g0" \
+    KCPPFLAGS="-pipe -O2 -march=${CPU_TYPE}" \
+    _nofail=1
 
 # Run the build
 CMD ["/build-tools/build.sh"]
