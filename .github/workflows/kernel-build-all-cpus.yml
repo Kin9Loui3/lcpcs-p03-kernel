@@ -9,8 +9,6 @@ env:
   KERNEL_VERSION: "6.13.5"
   BUILDER_REPO: "sirlucjan/kernel-patches"
   BUILDER_REF: "master"
-  KERNEL_REPO: "sirlucjan/linux-tkg"
-  KERNEL_REF: "master"
 
 jobs:
   build:
@@ -29,34 +27,81 @@ jobs:
       with:
         repository: ${{ env.BUILDER_REPO }}
         ref: ${{ env.BUILDER_REF }}
+        path: builder
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential \
+          bc \
+          bison \
+          flex \
+          libssl-dev \
+          libelf-dev \
+          xz-utils \
+          zstd \
+          git \
+          curl \
+          wget \
+          cpio \
+          dwarves \
+          python3 \
+          python3-pip \
+          pahole \
+          xmlto \
+          docbook-utils \
+          gcc \
+          make \
+          automake \
+          autoconf \
+          libtool \
+          kmod
 
     - name: Download kernel source
       run: |
-        cd linux-tkg
-        ./download_kernel_source.sh ${{ env.KERNEL_VERSION }}
+        cd builder
+        # Download the kernel source
+        wget https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${{ env.KERNEL_VERSION }}.tar.xz
+        tar -xf linux-${{ env.KERNEL_VERSION }}.tar.xz
+        mv linux-${{ env.KERNEL_VERSION }} linux-tkg
+
+    - name: Apply TKG patches
+      run: |
+        cd builder
+        # Copy TKG customization files
+        cp customization.cfg linux-tkg/ 2>/dev/null || true
+        # Apply patches if they exist
+        if [ -d "linux-tkg" ]; then
+          # The TKG patches are applied by the install.sh script
+          echo "TKG patches will be applied during build"
+        fi
 
     - name: Configure build
       run: |
-        cd linux-tkg
-        echo "_diff_cpuspecs=" > customization.cfg
-        echo "_cpusched=" > customization.cfg
-        echo "_compiler="gcc"" > customization.cfg
-        echo "_processor_opt=${{ matrix.cpu }}" >> customization.cfg
-        echo "_config_processor_override=1" >> customization.cfg
-        echo "_localmodcfg=" >> customization.cfg
-        echo "_menucfg=" >> customization.cfg
-        echo "_numadisable=2" >> customization.cfg
+        cd builder/linux-tkg
+        cat > customization.cfg << EOF
+        _diff_cpuspecs=
+        _cpusched=
+        _compiler="gcc"
+        _processor_opt=${{ matrix.cpu }}
+        _config_processor_override=1
+        _localmodcfg=
+        _menucfg=
+        _numadisable=2
+        EOF
 
     - name: Build kernel
       run: |
-        cd linux-tkg
+        cd builder
+        chmod +x install.sh
         ./install.sh install
 
     - name: Upload kernel packages
       uses: actions/upload-artifact@v4
       with:
         name: kernel-packages-${{ matrix.cpu }}
-        path: linux-tkg/*.pkg.tar.zst
+        path: builder/linux-tkg/*.pkg.tar.zst
         retention-days: 7
 
   create-release:
