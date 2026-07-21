@@ -42,21 +42,12 @@ jobs:
             git \
             wget \
             curl \
-            fakeroot \
-            pacman \
-            base-devel
+            fakeroot
 
       - name: Get latest kernel 7.x version
         id: kernel_version
         run: |
-          KERNEL_VERSION=$(curl -s https://www.kernel.org/releases.json | grep -oP '"version":\s*"\K7\.[0-9]+\.[0-9]+' | head -1)
-          
-          if [ -z "$KERNEL_VERSION" ]; then
-            KERNEL_VERSION="7.12.2"
-          fi
-          
-          echo "version=$KERNEL_VERSION" >> $GITHUB_OUTPUT
-          echo "Using kernel: $KERNEL_VERSION"
+          echo "Fetching latest kernel 7.x version..."
 
           KERNEL_VERSION=""
 
@@ -153,33 +144,34 @@ jobs:
           # Enable specific CPU optimizations
           case "$CPU_OPT" in
             znver3)
-              ./scripts/config --enable CONFIG_M_ZNVER3
+              ./scripts/config --set-val CONFIG_M_ZNVER3 y
               ;;
             znver4)
-              ./scripts/config --enable CONFIG_M_ZNVER4
+              ./scripts/config --set-val CONFIG_M_ZNVER4 y
               ;;
             x86-64-v3)
-              ./scripts/config --enable CONFIG_M_X86_64_V3
+              ./scripts/config --set-val CONFIG_M_X86_64_V3 y
               ;;
             x86-64-v4)
-              ./scripts/config --enable CONFIG_M_X86_64_V4
+              ./scripts/config --set-val CONFIG_M_X86_64_V4 y
               ;;
             haswell)
-              ./scripts/config --enable CONFIG_M_HASWELL
+              ./scripts/config --set-val CONFIG_M_HASWELL y
               ;;
             skylake)
-              ./scripts/config --enable CONFIG_M_SKYLAKE
+              ./scripts/config --set-val CONFIG_M_SKYLAKE y
               ;;
             broadwell)
-              ./scripts/config --enable CONFIG_M_BROADWELL
+              ./scripts/config --set-val CONFIG_M_BROADWELL y
               ;;
           esac
 
           # Optimize for build speed
-          ./scripts/config --disable CONFIG_DEBUG_INFO
-          ./scripts/config --disable CONFIG_DEBUG_KERNEL
-          ./scripts/config --enable CONFIG_KERNEL_ZSTD
+          ./scripts/config --disable DEBUG_INFO
+          ./scripts/config --disable DEBUG_KERNEL
+          ./scripts/config --set-val CONFIG_KERNEL_ZSTD y
 
+          # Make sure we have a valid config
           make oldconfig < /dev/null
 
       - name: Build kernel
@@ -230,6 +222,7 @@ jobs:
           arch=('x86_64')
           url="https://github.com/yourusername/linux-lcpcs-p03"
           license=('GPL-2.0-only')
+          makedepends=()
 
           _kernelname=lcpcs-p03-CPU_PLACEHOLDER
           _kernver=KERNEL_VERSION_PLACEHOLDER
@@ -241,16 +234,17 @@ jobs:
                         'linux-firmware: firmware images needed for some devices')
             provides=("linux=${pkgver}")
             conflicts=('linux')
+            replaces=('linux-lcpcs-p03')
 
             # Install modules
             mkdir -p "$pkgdir/usr/lib/modules"
-            make -C ../linux-tkg INSTALL_MOD_PATH="$pkgdir" modules_install
+            cp -r ../linux-tkg/staging/lib/modules/* "$pkgdir/usr/lib/modules/"
 
-            # Install kernel image
+            # Install kernel image and related files
             mkdir -p "$pkgdir/boot"
-            cp ../linux-tkg/arch/x86/boot/bzImage "$pkgdir/boot/vmlinuz-lcpcs-p03-CPU_PLACEHOLDER"
-            cp ../linux-tkg/System.map "$pkgdir/boot/System.map-lcpcs-p03-CPU_PLACEHOLDER"
-            cp ../linux-tkg/.config "$pkgdir/boot/config-lcpcs-p03-CPU_PLACEHOLDER"
+            cp ../linux-tkg/staging/boot/vmlinuz-* "$pkgdir/boot/"
+            cp ../linux-tkg/staging/boot/System.map-* "$pkgdir/boot/"
+            cp ../linux-tkg/staging/boot/config-* "$pkgdir/boot/"
 
             # Create mkinitcpio preset
             mkdir -p "$pkgdir/etc/mkinitcpio.d"
@@ -262,161 +256,122 @@ jobs:
 
           PRESETS=('default' 'fallback')
 
+          #default_config="/etc/mkinitcpio.conf"
           default_image="/boot/initramfs-lcpcs-p03-CPU_PLACEHOLDER.img"
+          #default_options=""
 
+          #fallback_config="/etc/mkinitcpio.conf"
           fallback_image="/boot/initramfs-lcpcs-p03-CPU_PLACEHOLDER-fallback.img"
           fallback_options="-S autodetect"
           PRESET_EOF
 
             # Remove build and source symlinks
-        rm -f "$pkgdir"/usr/lib/modules/*/build
-        rm -f "$pkgdir"/usr/lib/modules/*/source
-      }
+            rm -f "$pkgdir"/usr/lib/modules/*/build
+            rm -f "$pkgdir"/usr/lib/modules/*/source
 
-      package_linux-lcpcs-p03-headers() {
-        pkgdesc="Headers and scripts for building modules for Linux LCPCs P03 kernel - CPU_PLACEHOLDER optimized"
-        provides=("linux-headers=${pkgver}")
-        conflicts=('linux-headers')
+            # Remove unnecessary files
+            rm -f "$pkgdir"/usr/lib/modules/*/kernel/drivers/gpu/drm/i915/*.o
+            rm -f "$pkgdir"/usr/lib/modules/*/kernel/net/netfilter/*.o
+          }
 
-        cd ../linux-tkg
+          package_linux-lcpcs-p03-headers() {
+            pkgdesc="Headers and scripts for building modules for Linux LCPCs P03 kernel - CPU_PLACEHOLDER optimized"
+            provides=("linux-headers=${pkgver}")
+            conflicts=('linux-headers')
+            replaces=('linux-lcpcs-p03-headers')
 
-        mkdir -p "$pkgdir/usr/src/linux-${_kernver}"
+            mkdir -p "$pkgdir/usr/lib/modules/${_kernver}"
 
-        # Copy kernel headers
-        cp -a include "$pkgdir/usr/src/linux-${_kernver}/"
-        cp Module.symvers "$pkgdir/usr/src/linux-${_kernver}/"
-        cp System.map "$pkgdir/usr/src/linux-${_kernver}/"
-        cp .config "$pkgdir/usr/src/linux-${_kernver}/"
-        cp -a scripts "$pkgdir/usr/src/linux-${_kernver}/"
-        cp -a tools/objtool "$pkgdir/usr/src/linux-${_kernver}/" 2>/dev/null || true
-        cp -a arch/x86/include "$pkgdir/usr/src/linux-${_kernver}/"
-        cp Makefile "$pkgdir/usr/src/linux-${_kernver}/"
+            # Copy kernel headers
+            cd ../linux-tkg
 
-        # Create symlinks
-        mkdir -p "$pkgdir/usr/lib/modules/${_kernver}"
-        ln -sr "$pkgdir/usr/src/linux-${_kernver}" "$pkgdir/usr/lib/modules/${_kernver}/build"
-        ln -sr "$pkgdir/usr/src/linux-${_kernver}" "$pkgdir/usr/lib/modules/${_kernver}/source"
+            mkdir -p "$pkgdir/usr/src/linux-${_kernver}"
 
-        # Clean up
-        find "$pkgdir/usr/src/linux-${_kernver}" -name "*.o" -delete
-        find "$pkgdir/usr/src/linux-${_kernver}" -name "*.a" -delete
-        find "$pkgdir/usr/src/linux-${_kernver}" -name ".git*" -delete
-        find "$pkgdir/usr/src/linux-${_kernver}" -name "*.cmd" -delete
-      }
-      PKGBUILD_EOF
+            # Copy necessary files
+            cp -a include "$pkgdir/usr/src/linux-${_kernver}/"
+            cp Module.symvers "$pkgdir/usr/src/linux-${_kernver}/"
+            cp System.map "$pkgdir/usr/src/linux-${_kernver}/"
+            cp .config "$pkgdir/usr/src/linux-${_kernver}/"
+            cp -a scripts "$pkgdir/usr/src/linux-${_kernver}/"
+            cp -a tools/objtool "$pkgdir/usr/src/linux-${_kernver}/"
 
-      # Replace placeholders
-      sed -i "s/KERNEL_VERSION_PLACEHOLDER/$KERNEL_VERSION/g" PKGBUILD
-      sed -i "s/CPU_PLACEHOLDER/$CPU_OPT/g" PKGBUILD
+            # Create symlink
+            mkdir -p "$pkgdir/usr/lib/modules/${_kernver}"
+            ln -sr "$pkgdir/usr/src/linux-${_kernver}" "$pkgdir/usr/lib/modules/${_kernver}/build"
+            ln -sr "$pkgdir/usr/src/linux-${_kernver}" "$pkgdir/usr/lib/modules/${_kernver}/source"
 
-      echo "PKGBUILD created successfully"
-      cat PKGBUILD
+            # Remove unnecessary files
+            find "$pkgdir/usr/src/linux-${_kernver}" -name "*.o" -delete
+            find "$pkgdir/usr/src/linux-${_kernver}" -name "*.a" -delete
+            find "$pkgdir/usr/src/linux-${_kernver}" -name ".git*" -delete
+          }
+          PKGBUILD_EOF
 
-  - name: Build Arch Linux package
-    run: |
-      cd pkgbuild
+          # Replace placeholders
+          sed -i "s/KERNEL_VERSION_PLACEHOLDER/$KERNEL_VERSION/g" PKGBUILD
+          sed -i "s/CPU_PLACEHOLDER/$CPU_OPT/g" PKGBUILD
 
-      # Fix makepkg to work in CI
-      cat > ~/.makepkg.conf << 'MAKEPKG_EOF'
-      PACKAGER="GitHub Actions <noreply@github.com>"
-      CFLAGS="-march=x86-64-v2 -O2 -pipe -fno-plt -fexceptions -Wp,-D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security"
-      CXXFLAGS="$CFLAGS"
-      LDFLAGS="-Wl,-O1,--sort-common,--as-needed,-z,relro,-z,now"
-      MAKEFLAGS="-j$(nproc)"
-      BUILDDIR=/tmp/makepkg
-      MAKEPKG_COMPRESSION=(zst)
-      PKGEXT='.pkg.tar.zst'
-      SRCEXT='.src.tar.gz'
-      MAKEPKG_EOF
+          echo "PKGBUILD created for $CPU_OPT"
 
-      # Run makepkg
-      echo "Starting package build..."
-      makepkg -s --noconfirm 2>&1 | tee build.log
+      - name: Build Arch Linux package
+        run: |
+          cd pkgbuild
 
-      if [ ${PIPESTATUS[0]} -eq 0 ]; then
-        echo "✓ Package built successfully"
-        ls -lh *.pkg.tar.zst
-      else
-        echo "✗ Build failed!"
-        tail -200 build.log
-        exit 1
-      fi
+          # Create a minimal makepkg.conf for CI environment
+          mkdir -p ~/.config/pacman
+          cat > ~/.makepkg.conf << 'MAKEPKG_EOF'
+          PACKAGER="GitHub Actions <noreply@github.com>"
+          CFLAGS="-march=x86-64-v2 -O2 -pipe -fno-plt -fexceptions -Wp,-D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security"
+          CXXFLAGS="$CFLAGS"
+          LDFLAGS="-Wl,-O1,--sort-common,--as-needed,-z,relro,-z,now"
+          MAKEFLAGS="-j$(nproc)"
+          BUILDDIR=/tmp/makepkg
+          MAKEPKG_COMPRESSION=(zst)
+          PKGEXT='.pkg.tar.zst'
+          SRCEXT='.src.tar.gz'
+          MAKEPKG_EOF
 
-  - name: Upload artifacts
-    if: success()
-    uses: actions/upload-artifact@v4
-    with:
-      name: linux-lcpcs-p03-${{ matrix.cpu }}
-      path: |
-        pkgbuild/*.pkg.tar.zst
-        pkgbuild/build.log
-      retention-days: 30
-      compression-level: 0
+          # Build the package
+          makepkg -s --noconfirm 2>&1 | tee build.log
 
-  - name: Create GitHub Release
-    if: success()
-    uses: softprops/action-gh-release@v2
-    with:
-      files: pkgbuild/*.pkg.tar.zst
-      tag_name: v${{ steps.kernel_version.outputs.version }}-${{ matrix.cpu }}
-      name: Kernel ${{ steps.kernel_version.outputs.version }} - ${{ matrix.cpu }} optimized
-      body: |
-        # Linux LCPCs P03 Kernel Release
+          if [ ${PIPESTATUS[0]} -eq 0 ]; then
+            echo "Package built successfully"
+            ls -lh *.pkg.tar.zst
+          else
+            echo "Build failed!"
+            tail -100 build.log
+            exit 1
+          fi
 
-        **Kernel Version:** ${{ steps.kernel_version.outputs.version }}
-        **CPU Optimization:** ${{ matrix.cpu }}
-        **Build Date:** $(date -u +'%Y-%m-%d %H:%M:%S UTC')
-        **Build Number:** ${{ github.run_number }}
+      - name: Upload artifacts
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-lcpcs-p03-${{ matrix.cpu }}
+          path: |
+            pkgbuild/*.pkg.tar.zst
+            pkgbuild/build.log
+          retention-days: 30
 
-        ## Installation Instructions
+      - name: Create release
+        if: success()
+        uses: softprops/action-gh-release@v1
+        with:
+          files: pkgbuild/*.pkg.tar.zst
+          tag_name: kernel-${{ steps.kernel_version.outputs.version }}-${{ matrix.cpu }}
+          body: |
+            Linux Kernel ${{ steps.kernel_version.outputs.version }}
+            CPU Optimization: ${{ matrix.cpu }}
+            Built on: ${{ github.run_number }}
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-        ```bash
-        # Download packages
-        wget https://github.com/${{ github.repository }}/releases/download/v${{ steps.kernel_version.outputs.version }}-${{ matrix.cpu }}/linux-lcpcs-p03-*.pkg.tar.zst
-
-        # Install
-        sudo pacman -U linux-lcpcs-p03-*.pkg.tar.zst linux-lcpcs-p03-headers-*.pkg.tar.zst
-
-        # Generate initramfs
-        sudo mkinitcpio -P linux-lcpcs-p03-${{ matrix.cpu }}
-
-        # Update bootloader
-        sudo grub-mkconfig -o /boot/grub/grub.cfg
-        ```
-
-    - **linux-lcpcs-p03**: Optimized kernel binary and modules
-    - **linux-lcpcs-p03-headers**: Development headers for building kernel modules
-
-    ## Build Details
-
-    - **Kernel Source:** https://www.kernel.org
-    - **Build System:** GitHub Actions
-    - **Compiler:** GCC (latest)
-    - **CPU Target:** ${{ matrix.cpu }}
-    - **Optimizations:** Native CPU instructions, disabled debug symbols
-    - **Compression:** ZSTD
-
-    ## Supported CPUs
-
-    - Zen 3 (Ryzen 5000)
-    - Zen 4 (Ryzen 7000)
-    - x86-64-v3 (Haswell and newer)
-    - x86-64-v4 (Skylake and newer)
-    - Broadwell
-    - Haswell
-    - Skylake
-
-    ## Verification
-
-    After installation, verify with:
-    ```bash
-    uname -r
-    cat /proc/cmdline
-    ```
-
-    ---
-    *Built automatically by GitHub Actions*
-  draft: false
-  prerelease: false
-env:
-  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -rf linux-tkg
+          rm -f linux-*.tar.xz
+          rm -rf pkgbuild
+          echo "Cleanup completed"
