@@ -63,4 +63,22 @@ RUN mkdir -p /home/builder/bin && \
 USER builder
 
 # Add ccache wrappers to PATH
-ENV
+ENV PATH="/home/builder/bin:${PATH}"
+
+# Set environment variables for faster compilation
+ENV CPU_TYPE=${CPU_TYPE} \
+    KERNEL_VERSION=${KERNEL_VERSION} \
+    _compiler=llvm \
+    _lto_mode=thin \
+    _kernel_base=stable \
+    CCACHE_DIR=/home/builder/.ccache \
+    CCACHE_MAXSIZE=10G \
+    CCACHE_SLOPPINESS=pch_defines,time_macros,include_file_mtime,include_file_ctime \
+    CCACHE_COMPRESS=1 \
+    CCACHE_COMPRESSLEVEL=6
+
+# Run the build during image creation
+RUN /build-tools/build.sh
+
+# Copy packages to output directory (in case they're needed at runtime)
+CMD ["/bin/bash", "-c", "cp /linux-tkg/*.pkg.tar.* /output/ 2>/dev/null; echo 'Build complete - packages are in /output/'"]
