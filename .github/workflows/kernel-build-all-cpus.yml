@@ -49,8 +49,8 @@ jobs:
   build-matrix:
     needs: check-version
     if: needs.check-version.outputs.should_build == 'true'
-    runs-on: ubuntu-latest-8-cores  # Changed to 8-core runner for faster builds
-    timeout-minutes: 180  # 3 hour timeout (was hitting 6 hour limit)
+    runs-on: ubuntu-latest-8-cores
+    timeout-minutes: 180
     strategy:
       matrix:
         cpu-type:
@@ -62,7 +62,7 @@ jobs:
           - haswell
           - skylake
           - broadwell
-      max-parallel: 4  # Run 4 builds in parallel max
+      max-parallel: 4
       fail-fast: false
 
     steps:
@@ -96,7 +96,7 @@ jobs:
       - name: Build and push ${{ matrix.cpu-type }}
         uses: docker/build-push-action@v5
         with:
-          context: ./build-tools
+          context: .  # Changed to root context to include build-tools directory
           file: ./build-tools/Dockerfile
           build-args: |
             CPU_TYPE=${{ matrix.cpu-type }}
@@ -115,9 +115,12 @@ jobs:
         run: |
           mkdir -p output-${{ matrix.cpu-type }}
           IMAGE_NAME_LOWER=$(echo "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}" | tr '[:upper:]' '[:lower:]')
+          # Override entrypoint to just copy packages from the build directory
           docker run --rm \
             -v $(pwd)/output-${{ matrix.cpu-type }}:/output \
-            ${IMAGE_NAME_LOWER}:${{ matrix.cpu-type }}-latest
+            --entrypoint /bin/bash \
+            ${IMAGE_NAME_LOWER}:${{ matrix.cpu-type }}-latest \
+            -c "cp /linux-tkg/*.pkg.tar.* /output/ 2>/dev/null || echo 'No packages found in /linux-tkg/'"
 
       - name: Generate build info
         run: |
