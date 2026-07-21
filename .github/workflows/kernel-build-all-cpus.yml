@@ -96,7 +96,7 @@ jobs:
       - name: Build and push ${{ matrix.cpu-type }}
         uses: docker/build-push-action@v5
         with:
-          context: ./build-tools  # Context is build-tools directory
+          context: .
           file: ./build-tools/Dockerfile
           build-args: |
             CPU_TYPE=${{ matrix.cpu-type }}
@@ -115,12 +115,11 @@ jobs:
         run: |
           mkdir -p output-${{ matrix.cpu-type }}
           IMAGE_NAME_LOWER=$(echo "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}" | tr '[:upper:]' '[:lower:]')
-          # Copy packages from the build directory
           docker run --rm \
             -v $(pwd)/output-${{ matrix.cpu-type }}:/output \
             --entrypoint /bin/bash \
             ${IMAGE_NAME_LOWER}:${{ matrix.cpu-type }}-latest \
-            -c "cp /linux-tkg/*.pkg.tar.* /output/ 2>/dev/null; echo 'Package list:'; ls -la /linux-tkg/*.pkg.tar.* 2>/dev/null || echo 'No packages found in /linux-tkg/'"
+            -c "cp /linux-tkg/*.pkg.tar.* /output/ 2>/dev/null; ls -la /output/"
 
       - name: Generate build info
         run: |
