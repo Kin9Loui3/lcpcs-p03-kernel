@@ -81,4 +81,4 @@ ENV CPU_TYPE=${CPU_TYPE} \
 RUN /build-tools/build.sh
 
 # Copy packages to output directory (in case they're needed at runtime)
-CMD ["/bin/bash", "-c", "cp /linux-tkg/*.pkg.tar.* /output/ 2>/dev/null; echo 'Build complete - packages are in /output/'"]
+CMD ["/bin/bash", "-c", "echo 'Build complete - packages are in /output/'"]
