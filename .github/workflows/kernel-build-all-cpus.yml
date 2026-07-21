@@ -1,223 +1,212 @@
-name: Linux Kernel P03 Build
+runs-on: ubuntu-latest
+timeout-minutes: 180
 
-on:
-  workflow_dispatch:
-  schedule:
-    - cron: '0 0 * * 1'
+steps:
+- name: Checkout repository
+  uses: actions/checkout@v4
+  with:
+    fetch-depth: 1
 
-jobs:
-  build:
-    strategy:
-      matrix:
-        cpu: [znver3, znver4, x86-64-v3, x86-64-v4, haswell, skylake, broadwell]
-      max-parallel: 4
-      fail-fast: false
+- name: Install build dependencies
+  run: |
+    sudo apt-get update
+    sudo apt-get install -y \
+      build-essential \
+      bc \
+      bison \
+      flex \
+      libssl-dev \
+      libelf-dev \
+      xz-utils \
+      zstd \
+      cpio \
+      dwarves \
+      pahole \
+      kmod \
+      rsync \
+      git \
+      wget \
+      curl
+
+- name: Get latest kernel 7.x version (STRICTLY NO KERNEL 6)
+  id: kernel_version
+  run: |
+    echo "Fetching latest kernel 7.x version..."
+    echo "CRITICAL: This build MUST use kernel 7.x. Kernel 6.x is strictly forbidden."
     
-    runs-on: ubuntu-latest
-    timeout-minutes: 180
+    KERNEL_VERSION=""
     
-    steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 1
+    # Method 1: List available kernels from v7.x directory and get the latest
+    echo "Method 1: Listing available 7.x kernels from kernel.org..."
+    AVAILABLE_KERNELS=$(curl -s --connect-timeout 15 https://cdn.kernel.org/pub/linux/kernel/v7.x/ 2>/dev/null | grep -oP 'linux-\K[0-9]+\.[0-9]+(?:\.[0-9]+)?(?=\.tar\.xz)' 2>/dev/null | sort -V)
     
-    - name: Install build dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y \
-          build-essential \
-          bc \
-          bison \
-          flex \
-          libssl-dev \
-          libelf-dev \
-          xz-utils \
-          zstd \
-          cpio \
-          dwarves \
-          pahole \
-          kmod \
-          rsync \
-          git \
-          wget \
-          curl
+    if [ -n "$AVAILABLE_KERNELS" ]; then
+      echo "Available 7.x kernels found:"
+      echo "$AVAILABLE_KERNELS"
+      KERNEL_VERSION=$(echo "$AVAILABLE_KERNELS" | tail -1)
+      echo "Latest 7.x kernel: $KERNEL_VERSION"
+    else
+      echo "No kernels found in v7.x directory listing"
+    fi
     
-    - name: Get latest kernel 7.x version (NO KERNEL 6 ALLOWED)
-      id: kernel_version
-      run: |
-        echo "Fetching latest kernel 7.x version..."
-        echo "WARNING: This build MUST use kernel 7.x. Kernel 6.x is strictly forbidden."
-        
-        KERNEL_VERSION=""
-        
-        # Try kernel.org releases.json first
-        echo "Trying kernel.org releases.json..."
-        RELEASES=$(curl -s --connect-timeout 10 https://www.kernel.org/releases.json 2>/dev/null)
-        if [ $? -eq 0 ] && [ -n "$RELEASES" ]; then
-          LATEST=$(echo "$RELEASES" | grep -oP '"latest_stable":\s*"\K[^"]+' 2>/dev/null)
-          if [ -n "$LATEST" ]; then
-            MAJOR_VERSION=$(echo "$LATEST" | cut -d'.' -f1)
-            if [ "$MAJOR_VERSION" -ge 7 ] 2>/dev/null; then
-              KERNEL_VERSION="$LATEST"
-              echo "Found kernel 7.x: $KERNEL_VERSION"
-            fi
+    # Method 2: Try releases.json as fallback
+    if [ -z "$KERNEL_VERSION" ]; then
+      echo "Method 2: Trying kernel.org releases.json..."
+      RELEASES=$(curl -s --connect-timeout 15 https://www.kernel.org/releases.json 2>/dev/null)
+      if [ -n "$RELEASES" ]; then
+        # Try to extract stable versions that are 7.x
+        for ver in $(echo "$RELEASES" | grep -oP '"version":\s*"\K[^"]+' 2>/dev/null | sort -V); do
+          MAJOR=$(echo "$ver" | cut -d'.' -f1)
+          if [ "$MAJOR" -ge 7 ] 2>/dev/null; then
+            KERNEL_VERSION="$ver"
+          fi
+        done
+        if [ -n "$KERNEL_VERSION" ]; then
+          echo "Found 7.x kernel from releases.json: $KERNEL_VERSION"
+        fi
+      fi
+    fi
+    
+    # Method 3: Try specific known 7.x versions as last resort
+    if [ -z "$KERNEL_VERSION" ]; then
+      echo "Method 3: Trying specific known 7.x versions..."
+      for ver in 7.12.2 7.12.1 7.12 7.11.2 7.11.1 7.11 7.10.3 7.10.2 7.10.1 7.10 7.9.3 7.9.2 7.9.1 7.9 7.8.1 7.8 7.7.1 7.7 7.6.1 7.6 7.5.1 7.5 7.4.1 7.4 7.3.1 7.3 7.2.1 7.2 7.1.1 7.1; do
+        if wget --spider -q --timeout=10 "https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-${ver}.tar.xz" 2>/dev/null; then
+          KERNEL_VERSION="$ver"
+          echo "Found kernel 7.x: $KERNEL_VERSION"
+          break
+        fi
+      done
+    fi
+    
+    # FINAL VERIFICATION: Ensure it's kernel 7.x or higher
+    if [ -z "$KERNEL_VERSION" ]; then
+      echo "ERROR: Could not find any kernel 7.x version!"
+      echo "This build REQUIRES kernel 7.x. Kernel 6.x is not acceptable."
+      echo "Available kernels from v7.x:"
+      echo "$AVAILABLE_KERNELS"
+      exit 1
+    fi
+    
+    MAJOR_VERSION=$(echo "$KERNEL_VERSION" | cut -d'.' -f1)
+    if [ "$MAJOR_VERSION" -lt 7 ] 2>/dev/null; then
+      echo "ERROR: Found kernel $KERNEL_VERSION (major version $MAJOR_VERSION)"
+      echo "This is NOT kernel 7.x. Aborting build."
+      exit 1
+    fi
+    
+    echo "version=$KERNEL_VERSION" >> $GITHUB_OUTPUT
+    echo "SUCCESS: Using kernel $KERNEL_VERSION (VALID 7.x kernel)"
+
+- name: Download kernel source
+  run: |
+    KERNEL_VERSION="${{ steps.kernel_version.outputs.version }}"
+    echo "Downloading kernel version: $KERNEL_VERSION"
+    
+    if wget -q "https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-${KERNEL_VERSION}.tar.xz"; then
+      echo "Successfully downloaded linux-${KERNEL_VERSION}.tar.xz"
+    else
+      echo "ERROR: Failed to download kernel source"
+      echo "Tried: https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-${KERNEL_VERSION}.tar.xz"
+      exit 1
+    fi
+    
+    tar -xf "linux-${KERNEL_VERSION}.tar.xz"
+    mv "linux-${KERNEL_VERSION}" linux-tkg
+    echo "Kernel source extracted to linux-tkg/"
+
+- name: Apply patches and config
+  run: |
+    cd linux-tkg
+    
+    # Copy P03 config
+    cp "${{ github.workspace }}/build-tools/linux-tkg-p03/p03.config" .config
+    echo "Using P03 config"
+    
+    # Apply patches
+    PATCH_DIR="${{ github.workspace }}/build-tools/linux-tkg-p03/patches"
+    if [ -d "$PATCH_DIR" ]; then
+      patch_count=0
+      for patch in $(ls "$PATCH_DIR"/*.patch 2>/dev/null | sort); do
+        if [ -f "$patch" ]; then
+          echo "Applying patch: $(basename $patch)"
+          if patch -p1 < "$patch"; then
+            patch_count=$((patch_count + 1))
+          else
+            echo "Warning: $(basename $patch) failed to apply"
           fi
         fi
-        
-        # If not found, try to list available kernels from v7.x directory
-        if [ -z "$KERNEL_VERSION" ]; then
-          echo "Trying to list available 7.x kernels..."
-          AVAILABLE=$(curl -s --connect-timeout 10 https://cdn.kernel.org/pub/linux/kernel/v7.x/ 2>/dev/null | grep -oP 'linux-\K[0-9]+\.[0-9]+(?:\.[0-9]+)?(?=\.tar\.xz)' 2>/dev/null | sort -V | tail -1)
-          
-          if [ -n "$AVAILABLE" ]; then
-            MAJOR_VERSION=$(echo "$AVAILABLE" | cut -d'.' -f1)
-            if [ "$MAJOR_VERSION" -ge 7 ] 2>/dev/null; then
-              KERNEL_VERSION="$AVAILABLE"
-              echo "Found kernel 7.x: $KERNEL_VERSION"
-            fi
-          fi
-        fi
-        
-        # If still not found, try specific known 7.x versions
-        if [ -z "$KERNEL_VERSION" ]; then
-          echo "Trying specific known 7.x versions..."
-          for ver in 7.12.1 7.12 7.11.2 7.11.1 7.11 7.10.3 7.10.2 7.10.1 7.10 7.9.3 7.9.2 7.9.1 7.9 7.8.1 7.8 7.7.1 7.7 7.6.1 7.6 7.5.1 7.5 7.4.1 7.4 7.3.1 7.3 7.2.1 7.2 7.1.1 7.1; do
-            if wget --spider -q --timeout=10 "https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-${ver}.tar.xz" 2>/dev/null; then
-              KERNEL_VERSION="$ver"
-              echo "Found kernel 7.x: $KERNEL_VERSION"
-              break
-            fi
-          done
-        fi
-        
-        # CRITICAL CHECK: Ensure it's kernel 7.x or higher
-        if [ -z "$KERNEL_VERSION" ]; then
-          echo "ERROR: Could not find any kernel 7.x version!"
-          echo "This build REQUIRES kernel 7.x. Kernel 6.x is not acceptable."
-          exit 1
-        fi
-        
-        MAJOR_VERSION=$(echo "$KERNEL_VERSION" | cut -d'.' -f1)
-        if [ "$MAJOR_VERSION" -lt 7 ] 2>/dev/null; then
-          echo "ERROR: Found kernel $KERNEL_VERSION (major version $MAJOR_VERSION)"
-          echo "This is NOT kernel 7.x. Aborting build."
-          exit 1
-        fi
-        
-        echo "version=$KERNEL_VERSION" >> $GITHUB_OUTPUT
-        echo "Final kernel version: $KERNEL_VERSION (VALID 7.x kernel)"
+      done
+      echo "Applied $patch_count patches"
+    fi
+
+- name: Configure for CPU optimization
+  run: |
+    cd linux-tkg
     
-    - name: Download kernel source
-      run: |
-        KERNEL_VERSION="${{ steps.kernel_version.outputs.version }}"
-        echo "Downloading kernel version: $KERNEL_VERSION"
-        
-        if wget -q "https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-${KERNEL_VERSION}.tar.xz"; then
-          echo "Successfully downloaded linux-${KERNEL_VERSION}.tar.xz"
-        elif wget -q "https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-${KERNEL_VERSION}.0.tar.xz"; then
-          KERNEL_VERSION="${KERNEL_VERSION}.0"
-          echo "Successfully downloaded linux-${KERNEL_VERSION}.tar.xz"
-        else
-          echo "ERROR: Failed to download kernel source"
-          exit 1
-        fi
-        
-        tar -xf "linux-${KERNEL_VERSION}.tar.xz"
-        mv "linux-${KERNEL_VERSION}" linux-tkg
+    CPU_OPT="${{ matrix.cpu }}"
+    echo "Configuring for: $CPU_OPT"
     
-    - name: Apply patches and config
-      run: |
-        cd linux-tkg
-        
-        # Copy P03 config
-        cp "${{ github.workspace }}/build-tools/linux-tkg-p03/p03.config" .config
-        echo "Using P03 config"
-        
-        # Apply patches
-        PATCH_DIR="${{ github.workspace }}/build-tools/linux-tkg-p03/patches"
-        if [ -d "$PATCH_DIR" ]; then
-          patch_count=0
-          for patch in $(ls "$PATCH_DIR"/*.patch 2>/dev/null | sort); do
-            if [ -f "$patch" ]; then
-              echo "Applying patch: $(basename $patch)"
-              if patch -p1 < "$patch"; then
-                patch_count=$((patch_count + 1))
-              else
-                echo "Warning: $(basename $patch) failed to apply"
-              fi
-            fi
-          done
-          echo "Applied $patch_count patches"
-        fi
+    # Enable specific CPU optimizations
+    case "$CPU_OPT" in
+      znver3)
+        scripts/config --set-val CONFIG_MZEN3 y
+        ;;
+      znver4)
+        scripts/config --set-val CONFIG_MZEN4 y
+        ;;
+      x86-64-v3)
+        scripts/config --set-val CONFIG_MX86_64_V3 y
+        ;;
+      x86-64-v4)
+        scripts/config --set-val CONFIG_MX86_64_V4 y
+        ;;
+      haswell)
+        scripts/config --set-val CONFIG_MHASWELL y
+        ;;
+      skylake)
+        scripts/config --set-val CONFIG_MSKYLAKE y
+        ;;
+      broadwell)
+        scripts/config --set-val CONFIG_MBROADWELL y
+        ;;
+    esac
     
-    - name: Configure for CPU optimization
-      run: |
-        cd linux-tkg
-        
-        CPU_OPT="${{ matrix.cpu }}"
-        echo "Configuring for: $CPU_OPT"
-        
-        # Enable specific CPU optimizations
-        case "$CPU_OPT" in
-          znver3)
-            scripts/config --set-val CONFIG_MZEN3 y
-            ;;
-          znver4)
-            scripts/config --set-val CONFIG_MZEN4 y
-            ;;
-          x86-64-v3)
-            scripts/config --set-val CONFIG_MX86_64_V3 y
-            ;;
-          x86-64-v4)
-            scripts/config --set-val CONFIG_MX86_64_V4 y
-            ;;
-          haswell)
-            scripts/config --set-val CONFIG_MHASWELL y
-            ;;
-          skylake)
-            scripts/config --set-val CONFIG_MSKYLAKE y
-            ;;
-          broadwell)
-            scripts/config --set-val CONFIG_MBROADWELL y
-            ;;
-        esac
-        
-        # Optimize for build speed
-        scripts/config --disable DEBUG_INFO
-        scripts/config --disable DEBUG_KERNEL
-        scripts/config --set-val CONFIG_KERNEL_ZSTD y
+    # Optimize for build speed
+    scripts/config --disable DEBUG_INFO
+    scripts/config --disable DEBUG_KERNEL
+    scripts/config --set-val CONFIG_KERNEL_ZSTD y
+
+- name: Build kernel
+  run: |
+    cd linux-tkg
+    CORES=$(nproc)
+    make -j$CORES bzImage
+    make -j$CORES modules
+
+- name: Package kernel
+  run: |
+    cd linux-tkg
     
-    - name: Build kernel
-      run: |
-        cd linux-tkg
-        CORES=$(nproc)
-        make -j$CORES bzImage
-        make -j$CORES modules
+    OUTPUT_DIR="${{ github.workspace }}/kernel-output/${{ matrix.cpu }}"
+    mkdir -p "$OUTPUT_DIR"
     
-    - name: Package kernel
-      run: |
-        cd linux-tkg
-        
-        OUTPUT_DIR="${{ github.workspace }}/kernel-output/${{ matrix.cpu }}"
-        mkdir -p "$OUTPUT_DIR"
-        
-        make modules_install INSTALL_MOD_PATH="$OUTPUT_DIR"
-        cp arch/x86/boot/bzImage "$OUTPUT_DIR/vmlinuz-${{ matrix.cpu }}"
-        cp System.map "$OUTPUT_DIR/System.map-${{ matrix.cpu }}"
-        cp .config "$OUTPUT_DIR/config-${{ matrix.cpu }}"
-    
-    - name: Upload kernel artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: kernel-${{ matrix.cpu }}
-        path: kernel-output/${{ matrix.cpu }}/
-        retention-days: 30
-    
-    - name: Upload combined artifacts
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: all-kernels
-        path: kernel-output/
-        retention-days: 30
+    make modules_install INSTALL_MOD_PATH="$OUTPUT_DIR"
+    cp arch/x86/boot/bzImage "$OUTPUT_DIR/vmlinuz-${{ matrix.cpu }}"
+    cp System.map "$OUTPUT_DIR/System.map-${{ matrix.cpu }}"
+    cp .config "$OUTPUT_DIR/config-${{ matrix.cpu }}"
+
+- name: Upload kernel artifacts
+  uses: actions/upload-artifact@v4
+  with:
+    name: kernel-${{ matrix.cpu }}
+    path: kernel-output/${{ matrix.cpu }}/
+    retention-days: 30
+
+- name: Upload combined artifacts
+  if: always()
+  uses: actions/upload-artifact@v4
+  with:
+    name: all-kernels
+    path: kernel-output/
+    retention-days: 30
