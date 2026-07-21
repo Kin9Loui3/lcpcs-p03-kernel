@@ -68,9 +68,6 @@ ENV PATH="/home/builder/bin:${PATH}"
 # Set environment variables for faster compilation
 ENV CPU_TYPE=${CPU_TYPE} \
     KERNEL_VERSION=${KERNEL_VERSION} \
-    _compiler=llvm \
-    _lto_mode=thin \
-    _kernel_base=stable \
     CCACHE_DIR=/home/builder/.ccache \
     CCACHE_MAXSIZE=10G \
     CCACHE_SLOPPINESS=pch_defines,time_macros,include_file_mtime,include_file_ctime \
