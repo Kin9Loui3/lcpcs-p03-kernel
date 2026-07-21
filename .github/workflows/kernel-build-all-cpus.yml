@@ -6,7 +6,6 @@ on:
     - cron: '0 0 * * 1'  # Weekly on Monday
 
 env:
-  KERNEL_VERSION: "6.13.5"
   TKG_REPO: "sirlucjan/kernel-patches"
   TKG_REF: "master"
 
@@ -65,63 +64,47 @@ jobs:
           libtool \
           kmod
 
-    - name: Download kernel source
+    - name: Download kernel source and setup TKG build
       run: |
         cd builder
-        wget https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${{ env.KERNEL_VERSION }}.tar.xz
-        tar -xf linux-${{ env.KERNEL_VERSION }}.tar.xz
-        mv linux-${{ env.KERNEL_VERSION }} linux-tkg
-
-    - name: Apply YOUR patches
-      run: |
-        PATCH_DIR="${{ github.workspace }}/my-repo/build-tools/linux-tkg-p03/patches"
-        echo "Patch directory: $PATCH_DIR"
-        echo "Available patches:"
-        ls -la "$PATCH_DIR"
         
-        cd builder/linux-tkg
+        # Copy your customization.cfg to the builder root
+        cp ${{ github.workspace }}/my-repo/build-tools/linux-tkg-p03/customization.cfg .
         
-        # Apply all patches in alphabetical order
-        for patch in "$PATCH_DIR"/*.patch; do
-          if [ -f "$patch" ]; then
-            echo "Applying patch: $(basename $patch)"
-            patch -p1 < "$patch" || echo "Warning: Failed to apply $(basename $patch)"
-          fi
-        done
+        # Copy your patches to the builder's patches directory
+        mkdir -p patches/custom
+        cp ${{ github.workspace }}/my-repo/build-tools/linux-tkg-p03/patches/*.patch patches/custom/
         
-        # Also copy customization.cfg if it exists
-        if [ -f "${{ github.workspace }}/my-repo/build-tools/linux-tkg-p03/customization.cfg" ]; then
-          echo "Copying customization.cfg"
-          cp "${{ github.workspace }}/my-repo/build-tools/linux-tkg-p03/customization.cfg" .
+        # Also copy p03.config if it exists
+        if [ -f "${{ github.workspace }}/my-repo/build-tools/linux-tkg-p03/p03.config" ]; then
+          cp ${{ github.workspace }}/my-repo/build-tools/linux-tkg-p03/p03.config .
         fi
-
-    - name: Configure build for CPU optimization
-      run: |
-        cd builder/linux-tkg
-        # Override or set CPU-specific configuration
-        cat >> customization.cfg << EOF
         
-        # CPU-specific override
-        _processor_opt=${{ matrix.cpu }}
-        _config_processor_override=1
-        _kernelname="-tkg-${{ matrix.cpu }}"
-        EOF
-        
-        echo "Final customization.cfg:"
-        cat customization.cfg
+        echo "Directory structure:"
+        ls -la
 
-    - name: Build kernel
+    - name: Run TKG build script
       run: |
         cd builder
-        if [ -f "install.sh" ]; then
-          chmod +x install.sh
-          ./install.sh install
+        
+        # Make sure the build script is executable
+        chmod +x build.sh 2>/dev/null || true
+        
+        # Run the TKG build script with your customization.cfg
+        # The script will automatically download the correct kernel version (7.1-latest)
+        # and apply all patches including yours
+        if [ -f "build.sh" ]; then
+          # Set environment variables for non-interactive build
+          export _noconfirm=1
+          export _distro="Arch"
+          export _kernel_config="$(pwd)/customization.cfg"
+          
+          # Run the build script
+          bash build.sh
         else
-          cd linux-tkg
-          make olddefconfig
-          make -j$(nproc)
-          make modules_install
-          make install
+          echo "No build.sh found in TKG repo root"
+          ls -la
+          exit 1
         fi
 
     - name: Upload kernel packages
@@ -149,10 +132,10 @@ jobs:
     - name: Create Release
       uses: softprops/action-gh-release@v1
       with:
-        tag_name: v${{ env.KERNEL_VERSION }}-${{ github.run_number }}
-        name: "Linux TKG ${{ env.KERNEL_VERSION }} Kernel Build ${{ github.run_number }}"
+        tag_name: v7.1-${{ github.run_number }}
+        name: "Linux TKG 7.1 Kernel Build ${{ github.run_number }}"
         body: |
-          ## Linux TKG Kernel ${{ env.KERNEL_VERSION }}
+          ## Linux TKG Kernel 7.1 (P03)
           Auto-built with custom P03 patches
           
           ### CPU Optimizations:
@@ -187,11 +170,11 @@ jobs:
     steps:
     - name: Save version
       run: |
-        echo "${{ env.KERNEL_VERSION }}" > .last_kernel_version
+        echo "7.1-latest" > .last_kernel_version
         git config user.name "github-actions"
         git config user.email "github-actions@github.com"
         git add .last_kernel_version
-        git commit -m "Update last kernel version to ${{ env.KERNEL_VERSION }}"
+        git commit -m "Update last kernel version to 7.1-latest"
         git push
       env:
         GITHUB_TOKEN: ${{ secrets.KERNEL_TOKEN }}
