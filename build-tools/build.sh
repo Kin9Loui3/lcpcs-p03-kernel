@@ -44,7 +44,6 @@ if [ -f p03.config ]; then
     echo "Using custom kernel configuration from p03.config"
     # The config will be used during makepkg build process
     # linux-tkg will pick it up if placed in the right location
-    cp p03.config .config
 fi
 
 # Build the kernel
