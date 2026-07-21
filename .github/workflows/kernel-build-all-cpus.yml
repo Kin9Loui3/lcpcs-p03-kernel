@@ -41,7 +41,9 @@ jobs:
             rsync \
             git \
             wget \
-            curl
+            curl \
+            fakeroot \
+            pacman
 
       - name: Get latest kernel 7.x version (STRICTLY NO KERNEL 6)
         id: kernel_version
@@ -69,7 +71,6 @@ jobs:
             echo "Method 2: Trying kernel.org releases.json..."
             RELEASES=$(curl -s --connect-timeout 15 https://www.kernel.org/releases.json 2>/dev/null)
             if [ -n "$RELEASES" ]; then
-              # Try to extract stable versions that are 7.x
               for ver in $(echo "$RELEASES" | grep -oP '"version":\s*"\K[^"]+' 2>/dev/null | sort -V); do
                 MAJOR=$(echo "$ver" | cut -d'.' -f1)
                 if [ "$MAJOR" -ge 7 ] 2>/dev/null; then
@@ -197,29 +198,190 @@ jobs:
           make -j$CORES bzImage
           make -j$CORES modules
 
-      - name: Package kernel
+      - name: Create Arch Linux package
+        id: package
         run: |
-          cd linux-tkg
+          KERNEL_VERSION="${{ steps.kernel_version.outputs.version }}"
+          CPU_OPT="${{ matrix.cpu }}"
+          PKG_VERSION="1"
           
-          OUTPUT_DIR="${{ github.workspace }}/kernel-output/${{ matrix.cpu }}"
-          mkdir -p "$OUTPUT_DIR"
+          # Create package directories
+          mkdir -p pkgbuild/{pkg,src}
+          cd pkgbuild
           
-          make modules_install INSTALL_MOD_PATH="$OUTPUT_DIR"
-          cp arch/x86/boot/bzImage "$OUTPUT_DIR/vmlinuz-${{ matrix.cpu }}"
-          cp System.map "$OUTPUT_DIR/System.map-${{ matrix.cpu }}"
-          cp .config "$OUTPUT_DIR/config-${{ matrix.cpu }}"
+          # Create PKGBUILD file
+          cat > PKGBUILD << 'EOF'
+          pkgname=('linux-lcpcs-p03' 'linux-lcpcs-p03-headers')
+          pkgver=KERNEL_VERSION_PLACEHOLDER
+          pkgrel=1
+          pkgdesc="Linux LCPCs P03 - CPU_PLACEHOLDER optimized kernel"
+          arch=('x86_64')
+          url="https://github.com/yourusername/linux-lcpcs-p03"
+          license=('GPL2')
+          makedepends=('bc' 'bison' 'flex' 'libelf' 'libssl' 'pahole' 'cpio' 'perl' 'tar' 'xz')
+          
+          prepare() {
+            cd "$srcdir"
+          }
+          
+          build() {
+            cd "$srcdir"
+            make -j$(nproc)
+          }
+          
+          package_linux-lcpcs-p03() {
+            pkgdesc="Linux LCPCs P03 kernel - CPU_PLACEHOLDER optimized"
+            depends=('coreutils' 'kmod' 'initramfs')
+            optdepends=('crda: to set the correct wireless channels of your country'
+                        'linux-firmware: firmware images needed for some devices')
+            provides=("linux=${pkgver}" "WIREGUARD-MODULE")
+            conflicts=('linux')
+            
+            cd "$srcdir"
+            
+            # Install modules
+            make INSTALL_MOD_PATH="$pkgdir/usr" modules_install
+            
+            # Install kernel
+            mkdir -p "$pkgdir/boot"
+            cp arch/x86/boot/bzImage "$pkgdir/boot/vmlinuz-lcpcs-p03-CPU_PLACEHOLDER"
+            cp System.map "$pkgdir/boot/System.map-lcpcs-p03-CPU_PLACEHOLDER"
+            cp .config "$pkgdir/boot/config-lcpcs-p03-CPU_PLACEHOLDER"
+            
+            # Remove build and source links
+            rm -f "$pkgdir"/usr/lib/modules/*/build
+            rm -f "$pkgdir"/usr/lib/modules/*/source
+          }
+          
+          package_linux-lcpcs-p03-headers() {
+            pkgdesc="Headers and scripts for building modules for Linux LCPCs P03 kernel - CPU_PLACEHOLDER optimized"
+            depends=("linux-lcpcs-p03=${pkgver}")
+            provides=("linux-headers=${pkgver}")
+            conflicts=('linux-headers')
+            
+            cd "$srcdir"
+            
+            mkdir -p "$pkgdir/usr/lib/modules/${pkgver}-lcpcs-p03-CPU_PLACEHOLDER"
+            
+            # Install headers
+            cp -t "$pkgdir/usr/lib/modules/${pkgver}-lcpcs-p03-CPU_PLACEHOLDER/build" -a include scripts
+            
+            # Install Makefile and kernel config
+            cp Makefile "$pkgdir/usr/lib/modules/${pkgver}-lcpcs-p03-CPU_PLACEHOLDER/build"
+            cp .config "$pkgdir/usr/lib/modules/${pkgver}-lcpcs-p03-CPU_PLACEHOLDER/build/.config"
+            
+            # Create symlinks
+            mkdir -p "$pkgdir/usr/src"
+            ln -sr "$pkgdir/usr/lib/modules/${pkgver}-lcpcs-p03-CPU_PLACEHOLDER/build" "$pkgdir/usr/src/linux-lcpcs-p03-${pkgver}"
+          }
+          EOF
+          
+          # Replace placeholders
+          sed -i "s/KERNEL_VERSION_PLACEHOLDER/$KERNEL_VERSION/g" PKGBUILD
+          sed -i "s/CPU_PLACEHOLDER/$CPU_OPT/g" PKGBUILD
+          
+          # Create srcinfo
+          makepkg --printsrcinfo > .SRCINFO
+          
+          # Build packages
+          makepkg -sf --noconfirm
+          
+          # Get package filenames
+          KERNEL_PKG=$(ls linux-lcpcs-p03-${KERNEL_VERSION}-*.pkg.tar.zst 2>/dev/null | head -1)
+          HEADERS_PKG=$(ls linux-lcpcs-p03-headers-${KERNEL_VERSION}-*.pkg.tar.zst 2>/dev/null | head -1)
+          
+          if [ -z "$KERNEL_PKG" ] || [ -z "$HEADERS_PKG" ]; then
+            echo "ERROR: Package creation failed"
+            ls -la *.pkg.tar.zst 2>/dev/null || echo "No packages found"
+            exit 1
+          fi
+          
+          echo "kernel_pkg=$KERNEL_PKG" >> $GITHUB_OUTPUT
+          echo "headers_pkg=$HEADERS_PKG" >> $GITHUB_OUTPUT
+          echo "cpu_opt=$CPU_OPT" >> $GITHUB_OUTPUT
+          echo "kernel_version=$KERNEL_VERSION" >> $GITHUB_OUTPUT
+          
+          echo "✓ Packages created:"
+          echo "  - $KERNEL_PKG"
+          echo "  - $HEADERS_PKG"
 
-      - name: Upload kernel artifacts
-        uses: actions/upload-artifact@v4
+      - name: Calculate checksums
+        run: |
+          cd pkgbuild
+          sha256sum *.pkg.tar.zst > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Upload to GitHub Releases
+        uses: softprops/action-gh-release@v1
         with:
-          name: kernel-${{ matrix.cpu }}
-          path: kernel-output/${{ matrix.cpu }}/
-          retention-days: 30
+          files: |
+            pkgbuild/${{ steps.package.outputs.kernel_pkg }}
+            pkgbuild/${{ steps.package.outputs.headers_pkg }}
+            pkgbuild/SHA256SUMS
+          tag_name: "linux-lcpcs-p03-v7.x-${{ steps.package.outputs.cpu_opt }}"
+          name: "Linux LCPCs P03 v7.x - ${{ steps.package.outputs.cpu_opt }} optimized"
+          body: |
+            # Linux LCPCs P03 Kernel Build
+            
+            **Kernel Version:** ${{ steps.package.outputs.kernel_version }}
+            **CPU Optimization:** ${{ steps.package.outputs.cpu_opt }}
+            **Build Date:** ${{ github.event.head_commit.timestamp }}
+            
+            ## Packages Included
+            - `linux-lcpcs-p03-${{ steps.package.outputs.kernel_version }}-1-x86_64.pkg.tar.zst` - Kernel
+            - `linux-lcpcs-p03-headers-${{ steps.package.outputs.kernel_version }}-1-x86_64.pkg.tar.zst` - Headers
+            
+            ## Installation
+            ```bash
+            pacman -U linux-lcpcs-p03-*.pkg.tar.zst linux-lcpcs-p03-headers-*.pkg.tar.zst
+            ```
+            
+            ## Verification
+            ```bash
+            sha256sum -c SHA256SUMS
+            ```
+            
+            ## CPU Optimizations Applied
+            - ${{ steps.package.outputs.cpu_opt }} architecture optimizations
+            - ZSTD kernel compression
+            - Debug symbols disabled for smaller size
+            
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Upload combined artifacts
+      - name: Create Release Summary
         if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: all-kernels
-          path: kernel-output/
-          retention-days: 30
+        run: |
+          echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Status:** ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Kernel Version:** ${{ steps.kernel_version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "**CPU Optimization:** ${{ matrix.cpu }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Kernel Package:** ${{ steps.package.outputs.kernel_pkg }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Headers Package:** ${{ steps.package.outputs.headers_pkg }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Build Details" >> $GITHUB_STEP_SUMMARY
+          echo "- **Runner:** ${{ runner.os }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Architecture:** ${{ runner.arch }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Build Time:** $(date -u +'%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Installation Instructions" >> $GITHUB_STEP_SUMMARY
+          echo '```bash' >> $GITHUB_STEP_SUMMARY
+          echo "pacman -U linux-lcpcs-p03-*.pkg.tar.zst linux-lcpcs-p03-headers-*.pkg.tar.zst" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "::error::Build failed for ${{ matrix.cpu }}"
+          echo "Check the logs above for details"
+          exit 1
+
+      - name: Cleanup workspace
+        if: always()
+        run: |
+          cd ${{ github.workspace }}
+          rm -rf linux-tkg pkgbuild *.tar.xz
+          echo "Workspace cleaned up"
