@@ -1,6 +1,7 @@
 FROM archlinux:latest
 
 ARG CPU_TYPE=generic
+ARG KERNEL_VERSION=stable
 
 # Update system and install build dependencies
 RUN pacman -Syu --noconfirm && \
@@ -43,13 +44,29 @@ RUN echo "max_size = 10G" > /home/builder/.ccache/ccache.conf && \
     echo "compression = true" >> /home/builder/.ccache/ccache.conf && \
     echo "compression_level = 6" >> /home/builder/.ccache/ccache.conf && \
     echo "sloppiness = pch_defines,time_macros,include_file_mtime,include_file_ctime" >> /home/builder/.ccache/ccache.conf && \
-    echo "cache_dir = /home/builder/.ccache" >> /home/builder/.ccache/ccache.conf
+    echo "cache_dir = /home/builder/.ccache" >> /home/builder/.ccache/ccache.conf && \
+    chown -R builder:builder /home/builder/.ccache
+
+# Create ccache wrapper scripts
+RUN mkdir -p /home/builder/bin && \
+    echo '#!/bin/bash' > /home/builder/bin/clang && \
+    echo 'exec /usr/bin/ccache /usr/bin/clang "$@"' >> /home/builder/bin/clang && \
+    echo '#!/bin/bash' > /home/builder/bin/clang++ && \
+    echo 'exec /usr/bin/ccache /usr/bin/clang++ "$@"' >> /home/builder/bin/clang++ && \
+    echo '#!/bin/bash' > /home/builder/bin/lld && \
+    echo 'exec /usr/bin/ccache /usr/bin/lld "$@"' >> /home/builder/bin/lld && \
+    chmod +x /home/builder/bin/clang /home/builder/bin/clang++ /home/builder/bin/lld && \
+    chown -R builder:builder /home/builder/bin
 
 # Switch to builder user
 USER builder
 
+# Add ccache wrappers to PATH
+ENV PATH="/home/builder/bin:${PATH}"
+
 # Set environment variables for faster compilation
 ENV CPU_TYPE=${CPU_TYPE} \
+    KERNEL_VERSION=${KERNEL_VERSION} \
     _compiler=llvm \
     _lto_mode=thin \
     _kernel_base=stable \
@@ -57,12 +74,10 @@ ENV CPU_TYPE=${CPU_TYPE} \
     CCACHE_MAXSIZE=10G \
     CCACHE_SLOPPINESS=pch_defines,time_macros,include_file_mtime,include_file_ctime \
     CCACHE_COMPRESS=1 \
-    CCACHE_COMPRESSLEVEL=6 \
-    MAKEFLAGS="-j$(nproc)" \
-    KBUILD_PARALLEL=$(nproc) \
-    KCFLAGS="-pipe -O2 -march=${CPU_TYPE} -g0" \
-    KCPPFLAGS="-pipe -O2 -march=${CPU_TYPE}" \
-    _nofail=1
+    CCACHE_COMPRESSLEVEL=6
 
-# Run the build
-CMD ["/build-tools/build.sh"]
+# Run the build during image creation
+RUN /build-tools/build.sh
+
+# Copy packages to output directory (in case they're needed at runtime)
+CMD ["/bin/bash", "-c", "cp /linux-tkg/*.pkg.tar.* /output/ 2>/dev/null; echo 'Build complete - packages are in /linux-tkg/'"]
