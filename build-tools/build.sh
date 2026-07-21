@@ -15,12 +15,6 @@ fi
 echo "Setting CPU type to ${CPU_TYPE}"
 sed -i "s/_processor_opt=.*/_processor_opt=${CPU_TYPE}/" customization.cfg
 
-# Enable P03 patchset if config exists
-if [ -f p03.config ]; then
-    echo "Applying P03 patchset configuration"
-    cat p03.config >> customization.cfg
-fi
-
 # Set compiler to LLVM/Clang
 echo "Configuring for LLVM/Clang compilation"
 sed -i "s/_compiler=.*/_compiler=llvm/" customization.cfg
@@ -34,6 +28,25 @@ sed -i "s/_use_ccache=.*/_use_ccache=1/" customization.cfg
 NPROC=$(nproc)
 sed -i "s/_makeflags=.*/_makeflags=-j${NPROC}/" customization.cfg
 
+# Apply patches if they exist
+if [ -d patches ] && [ -n "$(ls -A patches/*.patch 2>/dev/null)" ]; then
+    echo "Applying patches from patches/ directory..."
+    for patch in patches/*.patch; do
+        if [ -f "$patch" ]; then
+            echo "Applying patch: $(basename $patch)"
+            patch -p1 < "$patch" || echo "Warning: Failed to apply $(basename $patch)"
+        fi
+    done
+fi
+
+# Copy custom kernel config if it exists
+if [ -f p03.config ]; then
+    echo "Using custom kernel configuration from p03.config"
+    # The config will be used during makepkg build process
+    # linux-tkg will pick it up if placed in the right location
+    cp p03.config .config
+fi
+
 # Build the kernel
 echo "Starting kernel build..."
 cd /linux-tkg
@@ -41,7 +54,7 @@ makepkg -s --noconfirm
 
 # List built packages
 echo "Built packages:"
-ls -la /linux-tkg/*.pkg.tar.*
+ls -la /linux-tkg/*.pkg.tar.* || echo "No packages found"
 
 # Copy packages to output directory
 mkdir -p /output
