@@ -124,7 +124,7 @@ jobs:
           fi
 
           # Set variables
-          PATCH_DIR="${1:-./patches}"
+          PATCH_DIR="${{ github.workspace }}/build-tools/linux-tkg-p03/patches"
           SOURCE_DIR="${2:-.}"
           
           # Check if patch directory exists
