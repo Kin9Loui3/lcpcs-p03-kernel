@@ -175,10 +175,10 @@ jobs:
           ./scripts/config --disable DEBUG_INFO
           ./scripts/config --disable DEBUG_KERNEL
           ./scripts/config --set-val CONFIG_KERNEL_ZSTD y
-      
+    
           # Make sure we have a valid config
           make oldconfig < /dev/null
-      
+    
       - name: Build kernel
         run: |
           cd linux-tkg
@@ -206,25 +206,25 @@ jobs:
       - name: Build kernel packages
         run: |
           cd linux-tkg
-      
+    
           # Create package directory
           PKG_DIR="${{ github.workspace }}/kernel-packages"
           mkdir -p "$PKG_DIR"
-      
+    
           # Install modules
           make modules_install INSTALL_MOD_PATH="$PKG_DIR"
-      
+    
           # Install kernel
           make install INSTALL_PATH="$PKG_DIR/boot"
-      
+    
           # Copy config
           cp .config "$PKG_DIR/boot/config-${{ steps.kernel_version.outputs.version }}"
-      
+    
           # Create tarball
           cd "$PKG_DIR"
           tar -czf "${{ github.workspace }}/kernel-${{ matrix.cpu }}.tar.gz" .
           echo "Package created: kernel-${{ matrix.cpu }}.tar.gz"
-        
+    
       - name: Upload kernel package
         uses: actions/upload-artifact@v4
         with:
@@ -232,7 +232,7 @@ jobs:
           path: kernel-${{ matrix.cpu }}.tar.gz
           compression-level: 0
           retention-days: 90
-
+    
       - name: Upload build logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
@@ -242,7 +242,7 @@ jobs:
             linux-tkg/build.log
             linux-tkg/.config
           retention-days: 30
-
+    
       - name: Create release
         if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v1
@@ -261,16 +261,17 @@ jobs:
             - **Purpose:** Performance-optimized kernel for P03 platform
             - **Patches:** P03-specific optimizations applied
             - **Build Date:** $(date -u +'%Y-%m-%d %H:%M UTC')
-
+    
             ### Downloads
             Each artifact contains a complete kernel build for the specified CPU optimization.
-
+    
             ### Installation
             Extract the tarball and copy contents to your root filesystem:
             ```bash
             tar -xzf kernel-<cpu>.tar.gz -C /
             update-grub
             ```
+    
       - name: Cleanup
         if: always()
         run: |
