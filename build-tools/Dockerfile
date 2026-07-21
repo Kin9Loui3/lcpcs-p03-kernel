@@ -27,19 +27,19 @@ WORKDIR /linux-tkg
 # Clone linux-tkg
 RUN git clone https://github.com/Frogging-Family/linux-tkg.git .
 
-# Copy customization files
+# Copy customization files from build-tools/linux-tkg-p03/
 COPY linux-tkg-p03/customization.cfg ./customization.cfg
 COPY linux-tkg-p03/patches/ ./patches/
 COPY linux-tkg-p03/p03.config ./p03.config
-COPY build-tools/build.sh /build-tools/build.sh
+COPY build.sh /build-tools/build.sh
 
 # Set permissions
 RUN mkdir -p /output && \
     chmod +x /build-tools/build.sh && \
     chown -R builder:builder /linux-tkg /build-tools /output
 
-# Create output directory and ccache directory
-RUN mkdir -p /output /home/builder/.ccache && \
+# Create ccache directory
+RUN mkdir -p /home/builder/.ccache && \
     chown -R builder:builder /home/builder/.ccache
 
 # Pre-configure ccache for optimal performance
@@ -50,15 +50,13 @@ RUN echo "max_size = 10G" > /home/builder/.ccache/ccache.conf && \
     echo "cache_dir = /home/builder/.ccache" >> /home/builder/.ccache/ccache.conf && \
     chown -R builder:builder /home/builder/.ccache
 
-# Create ccache wrapper scripts
+# Create ccache wrapper scripts for clang
 RUN mkdir -p /home/builder/bin && \
     echo '#!/bin/bash' > /home/builder/bin/clang && \
     echo 'exec /usr/bin/ccache /usr/bin/clang "$@"' >> /home/builder/bin/clang && \
     echo '#!/bin/bash' > /home/builder/bin/clang++ && \
     echo 'exec /usr/bin/ccache /usr/bin/clang++ "$@"' >> /home/builder/bin/clang++ && \
-    echo '#!/bin/bash' > /home/builder/bin/lld && \
-    echo 'exec /usr/bin/ccache /usr/bin/lld "$@"' >> /home/builder/bin/lld && \
-    chmod +x /home/builder/bin/clang /home/builder/bin/clang++ /home/builder/bin/lld && \
+    chmod +x /home/builder/bin/clang /home/builder/bin/clang++ && \
     chown -R builder:builder /home/builder/bin
 
 # Switch to builder user
