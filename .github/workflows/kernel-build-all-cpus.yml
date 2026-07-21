@@ -1,206 +1,208 @@
-runs-on: ubuntu-latest
-timeout-minutes: 180
+name: Linux Kernel P03 Build
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 0 * * 1'
 
-steps:
-- name: Checkout repository
-  uses: actions/checkout@v4
-
-- name: Install dependencies
-  run: |
-    sudo apt-get update
-    sudo apt-get install -y \
-      build-essential \
-      bc \
-      bison \
-      flex \
-      libssl-dev \
-      libelf-dev \
-      xz-utils \
-      zstd \
-      git \
-      curl \
-      wget \
-      cpio \
-      dwarves \
-      python3 \
-      python3-pip \
-      pahole \
-      xmlto \
-      docbook-utils \
-      gcc \
-      make \
-      automake \
-      autoconf \
-      libtool \
-      kmod \
-      rsync
-
-- name: Download kernel source
-  run: |
-    # Download Linux 7.1 kernel (latest stable in 7.x series)
-    # Note: 7.1 may not exist yet on kernel.org, so we'll try 6.13 or latest
-    KERNEL_VERSION="6.13.5"
+jobs:
+  build:
+    strategy:
+      matrix:
+        cpu: [znver3, znver4, x86-64-v3, x86-64-v4, haswell, skylake, broadwell]
+      max-parallel: 4
+      fail-fast: false
     
-    # Try to download from kernel.org
-    wget https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${KERNEL_VERSION}.tar.xz || \
-    wget https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${KERNEL_VERSION}.tar.xz
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
     
-    tar -xf linux-${KERNEL_VERSION}.tar.xz
-    mv linux-${KERNEL_VERSION} linux-tkg
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 1
     
-    echo "KERNEL_VERSION=${KERNEL_VERSION}" >> $GITHUB_ENV
-
-- name: Apply custom patches
-  run: |
-    cd linux-tkg
+    - name: Install build dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential \
+          bc \
+          bison \
+          flex \
+          libssl-dev \
+          libelf-dev \
+          xz-utils \
+          zstd \
+          cpio \
+          dwarves \
+          pahole \
+          kmod \
+          rsync
     
-    # Apply your custom patches from the repository
-    PATCH_DIR=${{ github.workspace }}/build-tools/linux-tkg-p03/patches
+    - name: Get kernel version from config
+      id: kernel_version
+      run: |
+        VERSION=$(grep '_version=' build-tools/linux-tkg-p03/customization.cfg | head -1 | cut -d'"' -f2)
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "Building kernel version: $VERSION"
     
-    if [ -d "$PATCH_DIR" ]; then
-      for patch in "$PATCH_DIR"/*.patch; do
-        if [ -f "$patch" ]; then
-          echo "Applying patch: $(basename $patch)"
-          patch -p1 < "$patch" || echo "Warning: $(basename $patch) failed to apply"
+    - name: Download kernel source
+      run: |
+        wget https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${{ steps.kernel_version.outputs.version }}.tar.xz
+        tar -xf linux-${{ steps.kernel_version.outputs.version }}.tar.xz
+        mv linux-${{ steps.kernel_version.outputs.version }} linux-tkg
+    
+    - name: Apply patches from repository
+      run: |
+        cd linux-tkg
+        
+        # Apply all patches from the patches directory
+        PATCH_DIR=${{ github.workspace }}/build-tools/linux-tkg-p03/patches
+        if [ -d "$PATCH_DIR" ]; then
+          for patch in "$PATCH_DIR"/*.patch; do
+            if [ -f "$patch" ]; then
+              echo "Applying patch: $(basename $patch)"
+              patch -p1 < "$patch" || echo "Warning: $(basename $patch) failed to apply"
+            fi
+          done
         fi
-      done
-    fi
+        
+        # Copy the config if it exists
+        if [ -f "${{ github.workspace }}/build-tools/linux-tkg-p03/p03.config" ]; then
+          echo "Using custom p03.config"
+          cp ${{ github.workspace }}/build-tools/linux-tkg-p03/p03.config .config
+        fi
     
-    # Copy p03.config if it exists
-    if [ -f "${{ github.workspace }}/build-tools/linux-tkg-p03/p03.config" ]; then
-      cp ${{ github.workspace }}/build-tools/linux-tkg-p03/p03.config .config
-    fi
+    - name: Configure kernel for ${{ matrix.cpu }}
+      run: |
+        cd linux-tkg
+        
+        # If we don't have a config yet, use defconfig
+        if [ ! -f .config ]; then
+          make defconfig
+        fi
+        
+        # Set CPU optimization
+        CPU_OPT="${{ matrix.cpu }}"
+        scripts/config --disable CONFIG_GENERIC_CPU
+        scripts/config --disable CONFIG_MCORE2
+        scripts/config --disable CONFIG_MATOM
+        scripts/config --disable CONFIG_MZEN_V2
+        scripts/config --disable CONFIG_MZEN_V3
+        scripts/config --disable CONFIG_MZEN_V4
+        scripts/config --disable CONFIG_GENERIC_CPU2
+        scripts/config --disable CONFIG_GENERIC_CPU3
+        scripts/config --disable CONFIG_MHASWELL
+        scripts/config --disable CONFIG_MSKYLAKE
+        scripts/config --disable CONFIG_MBROADWELL
+        
+        case $CPU_OPT in
+          znver3)
+            scripts/config --enable CONFIG_MZEN_V3
+            ;;
+          znver4)
+            scripts/config --enable CONFIG_MZEN_V4
+            ;;
+          x86-64-v3)
+            scripts/config --enable CONFIG_GENERIC_CPU2
+            ;;
+          x86-64-v4)
+            scripts/config --enable CONFIG_GENERIC_CPU3
+            ;;
+          haswell)
+            scripts/config --enable CONFIG_MHASWELL
+            ;;
+          skylake)
+            scripts/config --enable CONFIG_MSKYLAKE
+            ;;
+          broadwell)
+            scripts/config --enable CONFIG_MBROADWELL
+            ;;
+        esac
+        
+        # Finalize configuration
+        make olddefconfig
+        
+        echo "CPU configuration:"
+        grep -E "CONFIG_(MZEN_V[234]|GENERIC_CPU|MHASWELL|MSKYLAKE|MBROADWELL)" .config
+    
+    - name: Build kernel
+      run: |
+        cd linux-tkg
+        make -j$(nproc) bzImage
+        make -j$(nproc) modules
+        echo "Build completed for ${{ matrix.cpu }}"
+    
+    - name: Package kernel
+      run: |
+        cd linux-tkg
+        
+        # Create package structure
+        mkdir -p package/boot
+        mkdir -p package/lib/modules
+        
+        # Copy kernel image
+        cp arch/x86/boot/bzImage package/boot/vmlinuz-linux-tkg-${{ matrix.cpu }}
+        
+        # Install modules
+        make modules_install INSTALL_MOD_PATH=package
+        
+        # Create compressed packages
+        cd package
+        tar -czf ../linux-tkg-${{ matrix.cpu }}.tar.gz *
+        tar -cf ../linux-tkg-${{ matrix.cpu }}.tar *
+        zstd --compress -f ../linux-tkg-${{ matrix.cpu }}.tar -o ../linux-tkg-${{ matrix.cpu }}.tar.zst
+        rm -f ../linux-tkg-${{ matrix.cpu }}.tar
+        
+        cd ..
+        echo "Packages created for ${{ matrix.cpu }}"
+    
+    - name: Upload kernel artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: linux-tkg-${{ matrix.cpu }}
+        path: |
+          linux-tkg/linux-tkg-${{ matrix.cpu }}.tar.gz
+          linux-tkg/linux-tkg-${{ matrix.cpu }}.tar.zst
+        retention-days: 7
+        if-no-files-found: warn
 
-- name: Configure kernel for ${{ matrix.cpu }}
-  run: |
-    cd linux-tkg
+  create-release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
     
-    # Start with a base configuration
-    make defconfig
+    steps:
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: artifacts
     
-    # Apply CPU-specific optimizations
-    case "${{ matrix.cpu }}" in
-      znver3)
-        scripts/config --set-val CONFIG_MZEN_V3 y
-        scripts/config --set-val CONFIG_GENERIC_CPU n
-        scripts/config --set-val CONFIG_MCORE2 n
-        scripts/config --set-val CONFIG_MATOM n
-        scripts/config --set-val CONFIG_GENERIC_CPU2 n
-        scripts/config --set-val CONFIG_MZEN_V2 n
-        scripts/config --set-val CONFIG_MZEN_V4 n
-        ;;
-      znver4)
-        scripts/config --set-val CONFIG_MZEN_V4 y
-        scripts/config --set-val CONFIG_GENERIC_CPU n
-        scripts/config --set-val CONFIG_MCORE2 n
-        scripts/config --set-val CONFIG_MATOM n
-        scripts/config --set-val CONFIG_GENERIC_CPU2 n
-        scripts/config --set-val CONFIG_MZEN_V2 n
-        scripts/config --set-val CONFIG_MZEN_V3 n
-        ;;
-      x86-64-v3)
-        scripts/config --set-val CONFIG_GENERIC_CPU2 y
-        scripts/config --set-val CONFIG_GENERIC_CPU n
-        scripts/config --set-val CONFIG_MCORE2 n
-        scripts/config --set-val CONFIG_MATOM n
-        scripts/config --set-val CONFIG_MZEN_V2 n
-        scripts/config --set-val CONFIG_MZEN_V3 n
-        scripts/config --set-val CONFIG_MZEN_V4 n
-        ;;
-      x86-64-v4)
-        scripts/config --set-val CONFIG_GENERIC_CPU3 y
-        scripts/config --set-val CONFIG_GENERIC_CPU n
-        scripts/config --set-val CONFIG_MCORE2 n
-        scripts/config --set-val CONFIG_MATOM n
-        scripts/config --set-val CONFIG_GENERIC_CPU2 n
-        scripts/config --set-val CONFIG_MZEN_V2 n
-        scripts/config --set-val CONFIG_MZEN_V3 n
-        scripts/config --set-val CONFIG_MZEN_V4 n
-        ;;
-      haswell)
-        scripts/config --set-val CONFIG_MHASWELL y
-        scripts/config --set-val CONFIG_GENERIC_CPU n
-        scripts/config --set-val CONFIG_MCORE2 n
-        scripts/config --set-val CONFIG_MATOM n
-        scripts/config --set-val CONFIG_GENERIC_CPU2 n
-        ;;
-      skylake)
-        scripts/config --set-val CONFIG_MSKYLAKE y
-        scripts/config --set-val CONFIG_GENERIC_CPU n
-        scripts/config --set-val CONFIG_MCORE2 n
-        scripts/config --set-val CONFIG_MATOM n
-        scripts/config --set-val CONFIG_GENERIC_CPU2 n
-        ;;
-      broadwell)
-        scripts/config --set-val CONFIG_MBROADWELL y
-        scripts/config --set-val CONFIG_GENERIC_CPU n
-        scripts/config --set-val CONFIG_MCORE2 n
-        scripts/config --set-val CONFIG_MATOM n
-        scripts/config --set-val CONFIG_GENERIC_CPU2 n
-        ;;
-    esac
-    
-    # Enable TKG-like optimizations
-    scripts/config --enable CONFIG_HZ_1000
-    scripts/config --set-val CONFIG_HZ 1000
-    scripts/config --enable CONFIG_SCHED_ALT
-    scripts/config --enable CONFIG_BORE_SCHEDULER
-    scripts/config --enable CONFIG_TCP_CONG_BBR
-    scripts/config --enable CONFIG_NET_SCH_FQ
-    scripts/config --enable CONFIG_NET_SCH_FQ_CODEL
-    scripts/config --enable CONFIG_NET_SCH_CAKE
-    scripts/config --enable CONFIG_NETFILTER_XT_MATCH_BPF
-    scripts/config --enable CONFIG_BPFILTER
-    scripts/config --enable CONFIG_BPF_SYSCALL
-    scripts/config --enable CONFIG_CGROUP_BPF
-    
-    # Save configuration
-    make olddefconfig
-    
-    echo "Configuration for ${{ matrix.cpu }}:"
-    grep "CONFIG_MZEN_V[234]\|CONFIG_GENERIC_CPU\|CONFIG_MHASWELL\|CONFIG_MSKYLAKE\|CONFIG_MBROADWELL" .config
-
-- name: Build kernel
-  run: |
-    cd linux-tkg
-    
-    # Build kernel
-    make -j$(nproc) bzImage
-    make -j$(nproc) modules
-    
-    echo "Kernel build completed for ${{ matrix.cpu }}"
-
-- name: Package kernel
-  run: |
-    cd linux-tkg
-    
-    # Create package directory
-    mkdir -p kernel-package/boot
-    mkdir -p kernel-package/lib/modules
-    
-    # Copy kernel image
-    cp arch/x86/boot/bzImage kernel-package/boot/vmlinuz-tkg-${{ matrix.cpu }}
-    
-    # Install modules
-    make modules_install INSTALL_MOD_PATH=kernel-package
-    
-    # Create package
-    cd kernel-package
-    tar -czf ../linux-tkg-${{ matrix.cpu }}.tar.gz *
-    
-    # Also create zst package for Arch compatibility
-    tar -cf ../linux-tkg-${{ matrix.cpu }}.tar *
-    zstd ../linux-tkg-${{ matrix.cpu }}.tar -o ../linux-tkg-${{ matrix.cpu }}.tar.zst
-    
-    cd ..
-
-- name: Upload kernel artifacts
-  uses: actions/upload-artifact@v4
-  with:
-    name: linux-tkg-${{ matrix.cpu }}
-    path: |
-      linux-tkg/linux-tkg-${{ matrix.cpu }}.tar.gz
-      linux-tkg/linux-tkg-${{ matrix.cpu }}.tar.zst
-      linux-tkg/arch/x86/boot/bzImage
-    retention-days: 7
-    if-no-files-found: warn
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: kernel-build-${{ github.run_number }}
+        name: "Linux P03 Kernel Build ${{ github.run_number }}"
+        body: |
+          ## Linux P03 Kernel Build
+          
+          ### CPU Optimizations:
+          - znver3 (AMD Zen 3)
+          - znver4 (AMD Zen 4)
+          - x86-64-v3 (Haswell/Broadwell/Skylake)
+          - x86-64-v4 (AVX512)
+          - haswell (Intel Haswell)
+          - skylake (Intel Skylake)
+          - broadwell (Intel Broadwell)
+          
+          ### Features:
+          - Custom patches from build-tools/linux-tkg-p03
+          - CPU-specific optimizations
+          - Custom configuration
+          
+          ### Build Info:
+          - Build Number: ${{ github.run_number }}
+          - Commit: ${{ github.sha }}
+        files: artifacts/**/*
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
