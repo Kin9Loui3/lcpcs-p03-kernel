@@ -1,169 +1,63 @@
-name: Build Optimized Kernel
+name: Build Kernel
 
 on:
   push:
-    branches: [ main ]
-    tags: [ 'v*' ]
-  pull_request:
-    branches: [ main ]
+    branches:
+      - main
   workflow_dispatch:
-
-env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+    inputs:
+      cpu_type:
+        description: 'CPU Type'
+        required: true
+        default: 'generic'
+        type: choice
+        options:
+          - generic
+          - zen
+          - zen2
+          - zen3
 
 jobs:
   build:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        cpu_type: [zen3, zen4, x86-64-v3, x86-64-v4]
-    
-    permissions:
-      contents: write
-      packages: write
-    
+        cpu_type: [generic, zen, zen2, zen3]
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up cache
-        uses: actions/cache@v3
-        with:
-          path: |
-            ~/.cache/pip
-            ~/.cargo
-            kernel-cache
-          key: kernel-build-${{ matrix.cpu_type }}-${{ hashFiles('**/Dockerfile') }}
-          restore-keys: |
-            kernel-build-${{ matrix.cpu_type }}-
-            kernel-build-
+      - uses: actions/checkout@v4
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
-
-      - name: Build Docker image
-        uses: docker/build-push-action@v4
-        with:
-          context: .
-          push: false
-          load: true
-          tags: kernel-builder:${{ matrix.cpu_type }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          build-args: |
-            CPU_TYPE=${{ matrix.cpu_type }}
+        uses: docker/setup-buildx-action@v3
 
       - name: Build kernel in container
         run: |
+          docker build \
+            --build-arg CPU_TYPE=${{ matrix.cpu_type }} \
+            -t kernel-builder:${{ matrix.cpu_type }} \
+            .
           docker run --rm \
-            -v ${{ github.workspace }}/output:/output \
-            -e CPU_TYPE=${{ matrix.cpu_type }} \
+            -v ${{ github.workspace }}:/output \
             kernel-builder:${{ matrix.cpu_type }}
 
-      - name: List output files
-        run: |
-          ls -lah output/
-          du -sh output/*
-
       - name: Upload artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: kernel-${{ matrix.cpu_type }}
-          path: output/
-          retention-days: 30
+          path: kernel-*.tar.gz
 
   release:
     needs: build
     runs-on: ubuntu-latest
-    if: success()
-    
-    permissions:
-      contents: write
-    
+    if: startsWith(github.ref, 'refs/tags/')
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v3
-        with:
-          path: all-kernels
+        uses: actions/download-artifact@v4
 
-      - name: List downloaded artifacts
-        run: |
-          find all-kernels -type f -exec ls -lh {} \;
-
-      - name: Create release tag
-        id: tag
-        run: |
-          TAG="kernel-$(date +%Y%m%d-%H%M%S)"
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
-          echo "Created tag: $TAG"
-
-      - name: Create GitHub Release
+      - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: ${{ steps.tag.outputs.tag }}
-          name: Optimized Kernel Build - ${{ steps.tag.outputs.tag }}
-          body: |
-            ## Optimized Kernel Packages
-            
-            **Build Date:** ${{ github.event.head_commit.timestamp }}
-            **Commit:** ${{ github.sha }}
-            **Repository:** ${{ github.repository }}
-            
-            ### Available CPU Optimizations:
-            
-            | Package | Target CPU | Best For |
-            |---------|-----------|----------|
-            | **zen3** | Ryzen 3000/5000 | 3700X, 5700X, 5800X3D |
-            | **zen4** | Ryzen 7000 | 7700X, 7950X |
-            | **x86-64-v3** | Generic (AVX2) | Intel 6th+ gen, AMD Zen+ |
-            | **x86-64-v4** | Generic (AVX-512) | Intel 12th+ gen, AMD Zen 4c |
-            
-            ### Installation Instructions:
-            
-            ```bash
-            # 1. Download the kernel package for your CPU
-            # 2. Extract to /tmp
-            cd /tmp
-            tar xzf kernel-*.tar.gz
-            
-            # 3. Backup current kernel
-            sudo cp /boot/vmlinuz-linux /boot/vmlinuz-linux.bak
-            sudo cp /boot/initramfs-linux.img /boot/initramfs-linux.img.bak
-            
-            # 4. Install new kernel
-            sudo cp vmlinuz-* /boot/
-            sudo cp initramfs-* /boot/
-            
-            # 5. Update bootloader
-            sudo grub-mkconfig -o /boot/grub/grub.cfg
-            
-            # 6. Reboot
-            sudo reboot
-            ```
-            
-            ### Rollback (if needed):
-            
-            ```bash
-            sudo cp /boot/vmlinuz-linux.bak /boot/vmlinuz-linux
-            sudo cp /boot/initramfs-linux.img.bak /boot/initramfs-linux.img
-            sudo grub-mkconfig -o /boot/grub/grub.cfg
-            sudo reboot
-            ```
-          files: all-kernels/**/*
-          draft: false
-          prerelease: false
+          files: kernel-*/kernel-*.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Print download info
-        run: |
-          echo "✅ Release created successfully!"
-          echo ""
-          echo "📦 Download from: https://github.com/${{ github.repository }}/releases/tag/${{ steps.tag.outputs.tag }}"
-          echo ""
-          echo "Available packages:"
-          find all-kernels -type f -name "*.tar.gz" -o -name "*.deb" -o -name "*.rpm" | sort
