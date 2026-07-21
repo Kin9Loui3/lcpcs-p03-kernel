@@ -1,63 +1,422 @@
-name: Build Kernel
+name: Linux Kernel P03 Build
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
-    inputs:
-      cpu_type:
-        description: 'CPU Type'
-        required: true
-        default: 'generic'
-        type: choice
-        options:
-          - generic
-          - zen
-          - zen2
-          - zen3
+  schedule:
+    - cron: '0 0 * * 1'
 
 jobs:
   build:
-    runs-on: ubuntu-latest
     strategy:
       matrix:
-        cpu_type: [generic, zen, zen2, zen3]
-    steps:
-      - uses: actions/checkout@v4
+        cpu: [znver3, znver4, x86-64-v3, x86-64-v4, haswell, skylake, broadwell]
+      max-parallel: 4
+      fail-fast: false
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build kernel in container
-        run: |
-          docker build \
-            --build-arg CPU_TYPE=${{ matrix.cpu_type }} \
-            -t kernel-builder:${{ matrix.cpu_type }} \
-            .
-          docker run --rm \
-            -v ${{ github.workspace }}:/output \
-            kernel-builder:${{ matrix.cpu_type }}
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: kernel-${{ matrix.cpu_type }}
-          path: kernel-*.tar.gz
-
-  release:
-    needs: build
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
+    timeout-minutes: 180
+
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-
-      - name: Create Release
-        uses: softprops/action-gh-release@v1
+      - name: Checkout repository
+        uses: actions/checkout@v4
         with:
-          files: kernel-*/kernel-*.tar.gz
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 1
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            bc \
+            bison \
+            flex \
+            libssl-dev \
+            libelf-dev \
+            xz-utils \
+            zstd \
+            cpio \
+            dwarves \
+            pahole \
+            kmod \
+            rsync \
+            git \
+            wget \
+            curl \
+            fakeroot \
+            pacman \
+            base-devel
+
+      - name: Get latest kernel 7.x version
+        id: kernel_version
+        run: |
+          KERNEL_VERSION=$(curl -s https://www.kernel.org/releases.json | grep -oP '"version":\s*"\K7\.[0-9]+\.[0-9]+' | head -1)
+          
+          if [ -z "$KERNEL_VERSION" ]; then
+            KERNEL_VERSION="7.12.2"
+          fi
+          
+          echo "version=$KERNEL_VERSION" >> $GITHUB_OUTPUT
+          echo "Using kernel: $KERNEL_VERSION"
+
+          KERNEL_VERSION=""
+
+          # Method 1: List available kernels from v7.x directory
+          echo "Method 1: Listing available 7.x kernels from kernel.org..."
+          AVAILABLE_KERNELS=$(curl -s --connect-timeout 15 https://cdn.kernel.org/pub/linux/kernel/v7.x/ 2>/dev/null | grep -oP 'linux-\K[0-9]+\.[0-9]+(?:\.[0-9]+)?(?=\.tar\.xz)' 2>/dev/null | sort -V)
+
+          if [ -n "$AVAILABLE_KERNELS" ]; then
+            echo "Available 7.x kernels found:"
+            echo "$AVAILABLE_KERNELS"
+            KERNEL_VERSION=$(echo "$AVAILABLE_KERNELS" | tail -1)
+            echo "Latest 7.x kernel: $KERNEL_VERSION"
+          fi
+
+          # Method 2: Fallback to specific known versions
+          if [ -z "$KERNEL_VERSION" ]; then
+            echo "Method 2: Trying specific known 7.x versions..."
+            for ver in 7.12.2 7.12.1 7.12 7.11.2 7.11.1 7.11 7.10.3 7.10.2 7.10.1 7.10; do
+              if wget --spider -q --timeout=10 "https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-${ver}.tar.xz" 2>/dev/null; then
+                KERNEL_VERSION="$ver"
+                echo "Found kernel 7.x: $KERNEL_VERSION"
+                break
+              fi
+            done
+          fi
+
+          if [ -z "$KERNEL_VERSION" ]; then
+            echo "ERROR: Could not find any kernel 7.x version!"
+            exit 1
+          fi
+
+          MAJOR_VERSION=$(echo "$KERNEL_VERSION" | cut -d'.' -f1)
+          if [ "$MAJOR_VERSION" -lt 7 ] 2>/dev/null; then
+            echo "ERROR: Found kernel $KERNEL_VERSION but it's not 7.x"
+            exit 1
+          fi
+
+          echo "version=$KERNEL_VERSION" >> $GITHUB_OUTPUT
+          echo "SUCCESS: Using kernel $KERNEL_VERSION"
+
+      - name: Download kernel source
+        run: |
+          KERNEL_VERSION="${{ steps.kernel_version.outputs.version }}"
+          echo "Downloading kernel version: $KERNEL_VERSION"
+
+          if wget -q "https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-${KERNEL_VERSION}.tar.xz"; then
+            echo "Successfully downloaded linux-${KERNEL_VERSION}.tar.xz"
+          else
+            echo "ERROR: Failed to download kernel source"
+            exit 1
+          fi
+
+          tar -xf "linux-${KERNEL_VERSION}.tar.xz"
+          mv "linux-${KERNEL_VERSION}" linux-tkg
+          echo "Kernel source extracted to linux-tkg/"
+
+      - name: Apply patches and config
+        run: |
+          cd linux-tkg
+
+          # Copy P03 config
+          if [ -f "${{ github.workspace }}/build-tools/linux-tkg-p03/p03.config" ]; then
+            cp "${{ github.workspace }}/build-tools/linux-tkg-p03/p03.config" .config
+            echo "Using P03 config"
+          else
+            echo "Warning: p03.config not found, using default"
+            make defconfig
+          fi
+
+          # Apply patches
+          PATCH_DIR="${{ github.workspace }}/build-tools/linux-tkg-p03/patches"
+          if [ -d "$PATCH_DIR" ]; then
+            patch_count=0
+            for patch in $(ls "$PATCH_DIR"/*.patch 2>/dev/null | sort); do
+              if [ -f "$patch" ]; then
+                echo "Applying patch: $(basename $patch)"
+                if patch -p1 < "$patch"; then
+                  patch_count=$((patch_count + 1))
+                else
+                  echo "Warning: $(basename $patch) failed to apply"
+                fi
+              fi
+            done
+            echo "Applied $patch_count patches"
+          fi
+
+      - name: Configure for CPU optimization
+        run: |
+          cd linux-tkg
+
+          CPU_OPT="${{ matrix.cpu }}"
+          echo "Configuring for: $CPU_OPT"
+
+          # Enable specific CPU optimizations
+          case "$CPU_OPT" in
+            znver3)
+              ./scripts/config --enable CONFIG_M_ZNVER3
+              ;;
+            znver4)
+              ./scripts/config --enable CONFIG_M_ZNVER4
+              ;;
+            x86-64-v3)
+              ./scripts/config --enable CONFIG_M_X86_64_V3
+              ;;
+            x86-64-v4)
+              ./scripts/config --enable CONFIG_M_X86_64_V4
+              ;;
+            haswell)
+              ./scripts/config --enable CONFIG_M_HASWELL
+              ;;
+            skylake)
+              ./scripts/config --enable CONFIG_M_SKYLAKE
+              ;;
+            broadwell)
+              ./scripts/config --enable CONFIG_M_BROADWELL
+              ;;
+          esac
+
+          # Optimize for build speed
+          ./scripts/config --disable CONFIG_DEBUG_INFO
+          ./scripts/config --disable CONFIG_DEBUG_KERNEL
+          ./scripts/config --enable CONFIG_KERNEL_ZSTD
+
+          make oldconfig < /dev/null
+
+      - name: Build kernel
+        run: |
+          cd linux-tkg
+          CORES=$(nproc)
+          echo "Building with $CORES cores..."
+          make -j$CORES bzImage
+          make -j$CORES modules
+
+      - name: Install kernel and modules to staging directory
+        run: |
+          cd linux-tkg
+          KERNEL_VERSION="${{ steps.kernel_version.outputs.version }}"
+          CPU_OPT="${{ matrix.cpu }}"
+
+          # Create staging directory
+          mkdir -p staging/{boot,lib/modules}
+
+          # Install modules
+          make INSTALL_MOD_PATH="$(pwd)/staging" modules_install
+
+          # Install kernel image
+          cp arch/x86/boot/bzImage "staging/boot/vmlinuz-lcpcs-p03-${CPU_OPT}"
+          cp System.map "staging/boot/System.map-lcpcs-p03-${CPU_OPT}"
+          cp .config "staging/boot/config-lcpcs-p03-${CPU_OPT}"
+
+          # Create kernel release file
+          echo "$KERNEL_VERSION" > "staging/boot/kernel-release-${CPU_OPT}"
+
+          echo "Kernel installed to staging directory"
+          ls -lh staging/boot/
+
+      - name: Create PKGBUILD
+        run: |
+          KERNEL_VERSION="${{ steps.kernel_version.outputs.version }}"
+          CPU_OPT="${{ matrix.cpu }}"
+
+          mkdir -p pkgbuild
+          cd pkgbuild
+
+          cat > PKGBUILD << 'PKGBUILD_EOF'
+          pkgbase=linux-lcpcs-p03
+          pkgname=('linux-lcpcs-p03' 'linux-lcpcs-p03-headers')
+          pkgver=KERNEL_VERSION_PLACEHOLDER
+          pkgrel=1
+          pkgdesc="Linux LCPCs P03 - CPU_PLACEHOLDER optimized kernel"
+          arch=('x86_64')
+          url="https://github.com/yourusername/linux-lcpcs-p03"
+          license=('GPL-2.0-only')
+
+          _kernelname=lcpcs-p03-CPU_PLACEHOLDER
+          _kernver=KERNEL_VERSION_PLACEHOLDER
+
+          package_linux-lcpcs-p03() {
+            pkgdesc="Linux LCPCs P03 kernel - CPU_PLACEHOLDER optimized"
+            depends=('coreutils' 'kmod' 'initramfs')
+            optdepends=('crda: to set the correct wireless channels of your country'
+                        'linux-firmware: firmware images needed for some devices')
+            provides=("linux=${pkgver}")
+            conflicts=('linux')
+
+            # Install modules
+            mkdir -p "$pkgdir/usr/lib/modules"
+            make -C ../linux-tkg INSTALL_MOD_PATH="$pkgdir" modules_install
+
+            # Install kernel image
+            mkdir -p "$pkgdir/boot"
+            cp ../linux-tkg/arch/x86/boot/bzImage "$pkgdir/boot/vmlinuz-lcpcs-p03-CPU_PLACEHOLDER"
+            cp ../linux-tkg/System.map "$pkgdir/boot/System.map-lcpcs-p03-CPU_PLACEHOLDER"
+            cp ../linux-tkg/.config "$pkgdir/boot/config-lcpcs-p03-CPU_PLACEHOLDER"
+
+            # Create mkinitcpio preset
+            mkdir -p "$pkgdir/etc/mkinitcpio.d"
+            cat > "$pkgdir/etc/mkinitcpio.d/linux-lcpcs-p03-CPU_PLACEHOLDER.preset" << 'PRESET_EOF'
+          # mkinitcpio preset file for linux-lcpcs-p03
+          ALL_config="/etc/mkinitcpio.conf"
+          ALL_kver="/boot/vmlinuz-lcpcs-p03-CPU_PLACEHOLDER"
+          ALL_microcode=(/boot/*-ucode.img)
+
+          PRESETS=('default' 'fallback')
+
+          default_image="/boot/initramfs-lcpcs-p03-CPU_PLACEHOLDER.img"
+
+          fallback_image="/boot/initramfs-lcpcs-p03-CPU_PLACEHOLDER-fallback.img"
+          fallback_options="-S autodetect"
+          PRESET_EOF
+
+            # Remove build and source symlinks
+        rm -f "$pkgdir"/usr/lib/modules/*/build
+        rm -f "$pkgdir"/usr/lib/modules/*/source
+      }
+
+      package_linux-lcpcs-p03-headers() {
+        pkgdesc="Headers and scripts for building modules for Linux LCPCs P03 kernel - CPU_PLACEHOLDER optimized"
+        provides=("linux-headers=${pkgver}")
+        conflicts=('linux-headers')
+
+        cd ../linux-tkg
+
+        mkdir -p "$pkgdir/usr/src/linux-${_kernver}"
+
+        # Copy kernel headers
+        cp -a include "$pkgdir/usr/src/linux-${_kernver}/"
+        cp Module.symvers "$pkgdir/usr/src/linux-${_kernver}/"
+        cp System.map "$pkgdir/usr/src/linux-${_kernver}/"
+        cp .config "$pkgdir/usr/src/linux-${_kernver}/"
+        cp -a scripts "$pkgdir/usr/src/linux-${_kernver}/"
+        cp -a tools/objtool "$pkgdir/usr/src/linux-${_kernver}/" 2>/dev/null || true
+        cp -a arch/x86/include "$pkgdir/usr/src/linux-${_kernver}/"
+        cp Makefile "$pkgdir/usr/src/linux-${_kernver}/"
+
+        # Create symlinks
+        mkdir -p "$pkgdir/usr/lib/modules/${_kernver}"
+        ln -sr "$pkgdir/usr/src/linux-${_kernver}" "$pkgdir/usr/lib/modules/${_kernver}/build"
+        ln -sr "$pkgdir/usr/src/linux-${_kernver}" "$pkgdir/usr/lib/modules/${_kernver}/source"
+
+        # Clean up
+        find "$pkgdir/usr/src/linux-${_kernver}" -name "*.o" -delete
+        find "$pkgdir/usr/src/linux-${_kernver}" -name "*.a" -delete
+        find "$pkgdir/usr/src/linux-${_kernver}" -name ".git*" -delete
+        find "$pkgdir/usr/src/linux-${_kernver}" -name "*.cmd" -delete
+      }
+      PKGBUILD_EOF
+
+      # Replace placeholders
+      sed -i "s/KERNEL_VERSION_PLACEHOLDER/$KERNEL_VERSION/g" PKGBUILD
+      sed -i "s/CPU_PLACEHOLDER/$CPU_OPT/g" PKGBUILD
+
+      echo "PKGBUILD created successfully"
+      cat PKGBUILD
+
+  - name: Build Arch Linux package
+    run: |
+      cd pkgbuild
+
+      # Fix makepkg to work in CI
+      cat > ~/.makepkg.conf << 'MAKEPKG_EOF'
+      PACKAGER="GitHub Actions <noreply@github.com>"
+      CFLAGS="-march=x86-64-v2 -O2 -pipe -fno-plt -fexceptions -Wp,-D_FORTIFY_SOURCE=2 -Wformat -Werror=format-security"
+      CXXFLAGS="$CFLAGS"
+      LDFLAGS="-Wl,-O1,--sort-common,--as-needed,-z,relro,-z,now"
+      MAKEFLAGS="-j$(nproc)"
+      BUILDDIR=/tmp/makepkg
+      MAKEPKG_COMPRESSION=(zst)
+      PKGEXT='.pkg.tar.zst'
+      SRCEXT='.src.tar.gz'
+      MAKEPKG_EOF
+
+      # Run makepkg
+      echo "Starting package build..."
+      makepkg -s --noconfirm 2>&1 | tee build.log
+
+      if [ ${PIPESTATUS[0]} -eq 0 ]; then
+        echo "✓ Package built successfully"
+        ls -lh *.pkg.tar.zst
+      else
+        echo "✗ Build failed!"
+        tail -200 build.log
+        exit 1
+      fi
+
+  - name: Upload artifacts
+    if: success()
+    uses: actions/upload-artifact@v4
+    with:
+      name: linux-lcpcs-p03-${{ matrix.cpu }}
+      path: |
+        pkgbuild/*.pkg.tar.zst
+        pkgbuild/build.log
+      retention-days: 30
+      compression-level: 0
+
+  - name: Create GitHub Release
+    if: success()
+    uses: softprops/action-gh-release@v2
+    with:
+      files: pkgbuild/*.pkg.tar.zst
+      tag_name: v${{ steps.kernel_version.outputs.version }}-${{ matrix.cpu }}
+      name: Kernel ${{ steps.kernel_version.outputs.version }} - ${{ matrix.cpu }} optimized
+      body: |
+        # Linux LCPCs P03 Kernel Release
+
+        **Kernel Version:** ${{ steps.kernel_version.outputs.version }}
+        **CPU Optimization:** ${{ matrix.cpu }}
+        **Build Date:** $(date -u +'%Y-%m-%d %H:%M:%S UTC')
+        **Build Number:** ${{ github.run_number }}
+
+        ## Installation Instructions
+
+        ```bash
+        # Download packages
+        wget https://github.com/${{ github.repository }}/releases/download/v${{ steps.kernel_version.outputs.version }}-${{ matrix.cpu }}/linux-lcpcs-p03-*.pkg.tar.zst
+
+        # Install
+        sudo pacman -U linux-lcpcs-p03-*.pkg.tar.zst linux-lcpcs-p03-headers-*.pkg.tar.zst
+
+        # Generate initramfs
+        sudo mkinitcpio -P linux-lcpcs-p03-${{ matrix.cpu }}
+
+        # Update bootloader
+        sudo grub-mkconfig -o /boot/grub/grub.cfg
+        ```
+
+    - **linux-lcpcs-p03**: Optimized kernel binary and modules
+    - **linux-lcpcs-p03-headers**: Development headers for building kernel modules
+
+    ## Build Details
+
+    - **Kernel Source:** https://www.kernel.org
+    - **Build System:** GitHub Actions
+    - **Compiler:** GCC (latest)
+    - **CPU Target:** ${{ matrix.cpu }}
+    - **Optimizations:** Native CPU instructions, disabled debug symbols
+    - **Compression:** ZSTD
+
+    ## Supported CPUs
+
+    - Zen 3 (Ryzen 5000)
+    - Zen 4 (Ryzen 7000)
+    - x86-64-v3 (Haswell and newer)
+    - x86-64-v4 (Skylake and newer)
+    - Broadwell
+    - Haswell
+    - Skylake
+
+    ## Verification
+
+    After installation, verify with:
+    ```bash
+    uname -r
+    cat /proc/cmdline
+    ```
+
+    ---
+    *Built automatically by GitHub Actions*
+  draft: false
+  prerelease: false
+env:
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
