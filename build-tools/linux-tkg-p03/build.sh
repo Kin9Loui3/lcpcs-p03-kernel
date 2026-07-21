@@ -39,6 +39,40 @@ _kernel_base="${_kernel_base:-stable}"
 SCHEDULERS_STR="${SCHEDULERS:-eevdf bore bmq}"
 IFS=' ' read -ra SCHEDULERS <<< "$SCHEDULERS_STR"
 
+# ============================================
+# PERFORMANCE OPTIMIZATIONS
+# ============================================
+
+# Get number of CPU cores
+NPROC=$(nproc)
+echo "Detected ${NPROC} CPU cores"
+
+# Enable ccache for compilers
+export CC="ccache clang"
+export CXX="ccache clang++"
+export LD="ccache lld"
+export HOSTCC="ccache clang"
+export HOSTCXX="ccache clang++"
+
+# Set parallel build flags
+export MAKEFLAGS="-j${NPROC}"
+export KBUILD_PARALLEL="${NPROC}"
+
+# Compiler optimizations (disable debug info for speed)
+export KCFLAGS="${KCFLAGS:-} -pipe -O2 -march=${_processor_opt} -g0"
+export KCPPFLAGS="${KCPPFLAGS:-} -pipe -O2 -march=${_processor_opt}"
+
+# ccache settings
+export CCACHE_DIR="${CCACHE_DIR:-/home/builder/.ccache}"
+export CCACHE_MAXSIZE="${CCACHE_MAXSIZE:-10G}"
+export CCACHE_COMPRESS="${CCACHE_COMPRESS:-1}"
+export CCACHE_COMPRESSLEVEL="${CCACHE_COMPRESSLEVEL:-6}"
+export CCACHE_SLOPPINESS="${CCACHE_SLOPPINESS:-pch_defines,time_macros,include_file_mtime,include_file_ctime}"
+
+# Show ccache stats
+echo "ccache configuration:"
+ccache --show-stats || true
+
 echo "========================================"
 echo "Linux TKG Build Configuration"
 echo "========================================"
@@ -48,6 +82,7 @@ echo "_compiler: ${_compiler}"
 echo "_lto_mode: ${_lto_mode}"
 echo "_kernel_base: ${_kernel_base}"
 echo "Schedulers: ${SCHEDULERS[*]}"
+echo "Parallel jobs: ${NPROC}"
 echo "========================================"
 
 # Create output directory for built packages
@@ -60,7 +95,7 @@ for _cpusched in "${SCHEDULERS[@]}"; do
     echo "========================================="
     cd "$TKG"
     
-    # Clean previous builds
+    # Clean previous builds (keep ccache intact)
     echo "Cleaning previous build artifacts..."
     rm -rf src/ pkg/ *.pkg.tar.* 2>/dev/null || true
     
@@ -79,10 +114,21 @@ for _cpusched in "${SCHEDULERS[@]}"; do
     echo "  _compiler: ${_compiler}"
     echo "  _cpusched: ${_cpusched}"
     echo "  _lto_mode: ${_lto_mode}"
+    echo "  Parallel jobs: ${NPROC}"
+    echo "  CCache enabled: yes"
     
-    # Run makepkg
-    if makepkg -s --noconfirm --skippgpcheck LLVM=1 LLVM_IAS=1; then
+    # Run makepkg with performance flags
+    if makepkg -s --noconfirm --skippgpcheck \
+        LLVM=1 \
+        LLVM_IAS=1 \
+        CC=ccache\ clang \
+        CXX=ccache\ clang++ \
+        LD=ccache\ lld; then
         echo "✓ Build succeeded for $_cpusched"
+        
+        # Show ccache stats after build
+        echo "ccache stats after build:"
+        ccache --show-stats || true
         
         # Move built packages to output directory
         if mv *.pkg.tar.* /output/ 2>/dev/null; then
@@ -105,3 +151,8 @@ echo "========================================="
 echo "Packages available in /output:"
 ls -lh /output/
 echo "========================================="
+
+# Final ccache summary
+echo ""
+echo "ccache final summary:"
+ccache --show-stats || true
