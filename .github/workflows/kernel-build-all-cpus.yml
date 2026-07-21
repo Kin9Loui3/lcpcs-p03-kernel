@@ -48,76 +48,74 @@ jobs:
       run: |
         echo "Fetching latest kernel 7.x version..."
         
-        # Get the latest stable kernel from kernel.org
-        LATEST=$(curl -s https://www.kernel.org/releases.json | grep -oP '"latest_stable":\s*"\K[^"]+')
-        echo "Latest stable kernel: $LATEST"
+        # Try kernel.org releases.json first
+        echo "Trying kernel.org releases.json..."
+        RELEASES=$(curl -s --connect-timeout 10 https://www.kernel.org/releases.json 2>/dev/null)
+        if [ $? -eq 0 ] && [ -n "$RELEASES" ]; then
+          LATEST=$(echo "$RELEASES" | grep -oP '"latest_stable":\s*"\K[^"]+' 2>/dev/null)
+          if [ -n "$LATEST" ]; then
+            echo "Latest stable kernel: $LATEST"
+            MAJOR_VERSION=$(echo "$LATEST" | cut -d'.' -f1)
+            if [ "$MAJOR_VERSION" -ge 7 ] 2>/dev/null; then
+              KERNEL_VERSION="$LATEST"
+              echo "version=$KERNEL_VERSION" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+          fi
+        fi
         
-        # Extract major version
-        MAJOR_VERSION=$(echo "$LATEST" | cut -d'.' -f1)
-        echo "Major version: $MAJOR_VERSION"
+        # Try to list available kernels from v7.x directory
+        echo "Listing available 7.x kernels..."
+        AVAILABLE=$(curl -s --connect-timeout 10 https://cdn.kernel.org/pub/linux/kernel/v7.x/ 2>/dev/null | grep -oP 'linux-\K[0-9]+\.[0-9]+(?:\.[0-9]+)?(?=\.tar\.xz)' 2>/dev/null | sort -V | tail -1)
         
-        # Check if it's 7.x or higher
-        if [ "$MAJOR_VERSION" -ge 7 ]; then
-          KERNEL_VERSION="$LATEST"
-          echo "Using latest kernel: $KERNEL_VERSION"
+        if [ -n "$AVAILABLE" ]; then
+          KERNEL_VERSION="$AVAILABLE"
         else
-          # If latest is not 7.x, try to find the latest 7.x
-          echo "Latest is not 7.x, searching for latest 7.x..."
-          
-          # Try common 7.x versions in descending order
-          for ver in 7.12 7.11 7.10 7.9 7.8 7.7 7.6 7.5 7.4 7.3 7.2 7.1; do
-            if wget --spider -q "https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-${ver}.tar.xz" 2>/dev/null; then
+          # Fallback to specific known versions
+          for ver in 7.12.1 7.12 7.11.2 7.11.1 7.11 7.10.3 7.10.2 7.10.1 7.10 7.9.3 7.9.2 7.9.1 7.9 7.8.1 7.8 7.7.1 7.7 7.6.1 7.6 7.5.1 7.5 7.4.1 7.4 7.3.1 7.3 7.2.1 7.2 7.1.1 7.1; do
+            if wget --spider -q --timeout=10 "https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-${ver}.tar.xz" 2>/dev/null; then
               KERNEL_VERSION="$ver"
-              echo "Found kernel 7.x: $KERNEL_VERSION"
               break
             fi
           done
         fi
         
-        # Fallback
         if [ -z "$KERNEL_VERSION" ]; then
           KERNEL_VERSION="7.1"
-          echo "Using fallback kernel: $KERNEL_VERSION"
         fi
         
         echo "version=$KERNEL_VERSION" >> $GITHUB_OUTPUT
         echo "Final kernel version: $KERNEL_VERSION"
     
-    - name: Download kernel 7.x source
+    - name: Download kernel source
       run: |
         KERNEL_VERSION="${{ steps.kernel_version.outputs.version }}"
         echo "Downloading kernel version: $KERNEL_VERSION"
         
-        # Download from v7.x directory
-        echo "Downloading from v7.x..."
         if wget -q "https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-${KERNEL_VERSION}.tar.xz"; then
           echo "Successfully downloaded linux-${KERNEL_VERSION}.tar.xz"
+        elif wget -q "https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-${KERNEL_VERSION}.0.tar.xz"; then
+          KERNEL_VERSION="${KERNEL_VERSION}.0"
+          echo "Successfully downloaded linux-${KERNEL_VERSION}.tar.xz"
         else
-          # Try with .0 appended (e.g., 7.1 -> 7.1.0)
-          echo "Trying with .0 appended..."
-          if wget -q "https://cdn.kernel.org/pub/linux/kernel/v7.x/linux-${KERNEL_VERSION}.0.tar.xz"; then
-            KERNEL_VERSION="${KERNEL_VERSION}.0"
-            echo "Successfully downloaded linux-${KERNEL_VERSION}.tar.xz"
-          else
-            echo "ERROR: Failed to download kernel source"
-            echo "Available kernels in v7.x:"
-            curl -s https://cdn.kernel.org/pub/linux/kernel/v7.x/ | grep -oP 'linux-\d+\.\d+(\.\d+)?\.tar\.xz' | sort -V | tail -10
-            exit 1
-          fi
+          echo "ERROR: Failed to download kernel source"
+          exit 1
         fi
         
         tar -xf "linux-${KERNEL_VERSION}.tar.xz"
         mv "linux-${KERNEL_VERSION}" linux-tkg
-        echo "Kernel source extracted to linux-tkg"
     
-    - name: Apply patches from repository
+    - name: Apply patches and config
       run: |
         cd linux-tkg
         
-        # Apply all patches from the patches directory
+        # Copy P03 config
+        cp "${{ github.workspace }}/build-tools/linux-tkg-p03/p03.config" .config
+        echo "Using P03 config"
+        
+        # Apply patches
         PATCH_DIR="${{ github.workspace }}/build-tools/linux-tkg-p03/patches"
         if [ -d "$PATCH_DIR" ]; then
-          # Sort patches to apply them in order
           patch_count=0
           for patch in $(ls "$PATCH_DIR"/*.patch 2>/dev/null | sort); do
             if [ -f "$patch" ]; then
@@ -129,29 +127,15 @@ jobs:
               fi
             fi
           done
-          echo "Applied $patch_count patches successfully"
-        else
-          echo "No patches directory found at $PATCH_DIR"
-          mkdir -p "$PATCH_DIR"
+          echo "Applied $patch_count patches"
         fi
     
-    - name: Configure kernel
+    - name: Configure for CPU optimization
       run: |
         cd linux-tkg
         
-        # Copy existing config if available
-        if [ -f "${{ github.workspace }}/build-tools/linux-tkg-p03/config" ]; then
-          cp "${{ github.workspace }}/build-tools/linux-tkg-p03/config" .config
-          echo "Using existing config file"
-        else
-          # Generate default config
-          make defconfig
-          echo "Generated default config"
-        fi
-        
-        # Apply CPU optimization
         CPU_OPT="${{ matrix.cpu }}"
-        echo "Applying CPU optimization: $CPU_OPT"
+        echo "Configuring for: $CPU_OPT"
         
         # Enable specific CPU optimizations
         case "$CPU_OPT" in
@@ -178,50 +162,29 @@ jobs:
             ;;
         esac
         
-        # Disable debug options for faster build
+        # Optimize for build speed
         scripts/config --disable DEBUG_INFO
         scripts/config --disable DEBUG_KERNEL
-        
-        # Set kernel compression to zstd
         scripts/config --set-val CONFIG_KERNEL_ZSTD y
-        
-        echo "Configuration complete for $CPU_OPT"
     
     - name: Build kernel
       run: |
         cd linux-tkg
-        
-        # Get number of CPU cores
         CORES=$(nproc)
-        echo "Building with $CORES cores"
-        
-        # Build kernel and modules
         make -j$CORES bzImage
         make -j$CORES modules
-        
-        echo "Build complete for ${{ matrix.cpu }}"
     
     - name: Package kernel
       run: |
         cd linux-tkg
         
-        # Create output directory
         OUTPUT_DIR="${{ github.workspace }}/kernel-output/${{ matrix.cpu }}"
         mkdir -p "$OUTPUT_DIR"
         
-        # Install modules
         make modules_install INSTALL_MOD_PATH="$OUTPUT_DIR"
-        
-        # Copy kernel image
         cp arch/x86/boot/bzImage "$OUTPUT_DIR/vmlinuz-${{ matrix.cpu }}"
-        
-        # Copy System.map
         cp System.map "$OUTPUT_DIR/System.map-${{ matrix.cpu }}"
-        
-        # Copy config
         cp .config "$OUTPUT_DIR/config-${{ matrix.cpu }}"
-        
-        echo "Packaged kernel for ${{ matrix.cpu }}"
     
     - name: Upload kernel artifacts
       uses: actions/upload-artifact@v4
