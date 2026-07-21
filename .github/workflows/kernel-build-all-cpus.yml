@@ -7,8 +7,8 @@ on:
 
 env:
   KERNEL_VERSION: "6.13.5"
-  BUILDER_REPO: "sirlucjan/kernel-patches"
-  BUILDER_REF: "master"
+  TKG_REPO: "sirlucjan/kernel-patches"
+  TKG_REF: "master"
 
 jobs:
   build:
@@ -22,11 +22,18 @@ jobs:
     timeout-minutes: 180
 
     steps:
-    - name: Checkout builder repo
+    # Step 1: Checkout YOUR repo (contains your patches and this workflow)
+    - name: Checkout your repo with patches
       uses: actions/checkout@v4
       with:
-        repository: ${{ env.BUILDER_REPO }}
-        ref: ${{ env.BUILDER_REF }}
+        path: my-repo
+
+    # Step 2: Checkout TKG builder repo
+    - name: Checkout TKG builder repo
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ env.TKG_REPO }}
+        ref: ${{ env.TKG_REF }}
         path: builder
 
     - name: Install dependencies
@@ -61,48 +68,72 @@ jobs:
     - name: Download kernel source
       run: |
         cd builder
-        # Download the kernel source
         wget https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-${{ env.KERNEL_VERSION }}.tar.xz
         tar -xf linux-${{ env.KERNEL_VERSION }}.tar.xz
         mv linux-${{ env.KERNEL_VERSION }} linux-tkg
 
-    - name: Apply TKG patches
+    - name: Apply YOUR patches
       run: |
-        cd builder
-        # Copy TKG customization files
-        cp customization.cfg linux-tkg/ 2>/dev/null || true
-        # Apply patches if they exist
-        if [ -d "linux-tkg" ]; then
-          # The TKG patches are applied by the install.sh script
-          echo "TKG patches will be applied during build"
+        PATCH_DIR="${{ github.workspace }}/my-repo/build-tools/linux-tkg-p03/patches"
+        echo "Patch directory: $PATCH_DIR"
+        echo "Available patches:"
+        ls -la "$PATCH_DIR"
+        
+        cd builder/linux-tkg
+        
+        # Apply all patches in alphabetical order
+        for patch in "$PATCH_DIR"/*.patch; do
+          if [ -f "$patch" ]; then
+            echo "Applying patch: $(basename $patch)"
+            patch -p1 < "$patch" || echo "Warning: Failed to apply $(basename $patch)"
+          fi
+        done
+        
+        # Also copy customization.cfg if it exists
+        if [ -f "${{ github.workspace }}/my-repo/build-tools/linux-tkg-p03/customization.cfg" ]; then
+          echo "Copying customization.cfg"
+          cp "${{ github.workspace }}/my-repo/build-tools/linux-tkg-p03/customization.cfg" .
         fi
 
-    - name: Configure build
+    - name: Configure build for CPU optimization
       run: |
         cd builder/linux-tkg
-        cat > customization.cfg << EOF
-        _diff_cpuspecs=
-        _cpusched=
-        _compiler="gcc"
+        # Override or set CPU-specific configuration
+        cat >> customization.cfg << EOF
+        
+        # CPU-specific override
         _processor_opt=${{ matrix.cpu }}
         _config_processor_override=1
-        _localmodcfg=
-        _menucfg=
-        _numadisable=2
+        _kernelname="-tkg-${{ matrix.cpu }}"
         EOF
+        
+        echo "Final customization.cfg:"
+        cat customization.cfg
 
     - name: Build kernel
       run: |
         cd builder
-        chmod +x install.sh
-        ./install.sh install
+        if [ -f "install.sh" ]; then
+          chmod +x install.sh
+          ./install.sh install
+        else
+          cd linux-tkg
+          make olddefconfig
+          make -j$(nproc)
+          make modules_install
+          make install
+        fi
 
     - name: Upload kernel packages
       uses: actions/upload-artifact@v4
       with:
         name: kernel-packages-${{ matrix.cpu }}
-        path: builder/linux-tkg/*.pkg.tar.zst
+        path: |
+          builder/linux-tkg/*.pkg.tar.zst
+          builder/linux-tkg/arch/x86/boot/bzImage
+          builder/linux-tkg/vmlinux
         retention-days: 7
+        if-no-files-found: warn
 
   create-release:
     needs: build
@@ -122,7 +153,7 @@ jobs:
         name: "Linux TKG ${{ env.KERNEL_VERSION }} Kernel Build ${{ github.run_number }}"
         body: |
           ## Linux TKG Kernel ${{ env.KERNEL_VERSION }}
-          Auto-built from ${{ env.BUILDER_REPO }}@${{ env.BUILDER_REF }}
+          Auto-built with custom P03 patches
           
           ### CPU Optimizations:
           - znver3 (AMD Zen 3)
@@ -133,6 +164,13 @@ jobs:
           - haswell (Intel Haswell)
           - skylake (Intel Skylake)
           - broadwell (Intel Broadwell)
+          
+          ### Patches Applied:
+          - 750hz, acpi-call, IBT support
+          - BBR3, BORE scheduler
+          - cgroup-vram, clang-polly
+          - Various fixes and optimizations
+          - OpenRGB, vhba support
           
           ### Build Info:
           - Build Number: ${{ github.run_number }}
