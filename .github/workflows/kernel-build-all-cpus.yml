@@ -9,7 +9,7 @@ jobs:
   build:
     strategy:
       matrix:
-        cpu: [znver3, znver4, znver5, x86-64, x86-64-v2, x86-64-v3, x86-64-v4,]
+        cpu: [znver3, znver4, znver5, x86-64, x86-64-v2, x86-64-v3, x86-64-v4]
       max-parallel: 4
       fail-fast: false
 
